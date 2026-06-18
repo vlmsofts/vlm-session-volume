@@ -1,0 +1,19 @@
+# ── Live data outputs & permanent history (data, not code) ──
+data/
+
+# ── Large regenerable Bloomberg seed (rebuild via *_blpapi.py --seed) ──
+cotton_futures_volume_history.csv
+
+# ── Python bytecode / caches ──
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# ── Runtime logs ──
+logs/
+
+# ── Editor / OS scratch ──
+*.bak
+*.tmp
+*.swp
+*~
