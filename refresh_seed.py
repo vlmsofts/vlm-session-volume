@@ -84,7 +84,7 @@ def main() -> int:
     rc = _run([
         PYTHON, str(ENGINE),
         '--commodity', 'CT',
-        '--window',    'final',
+        '--window',    'eod',
         '--date',      yesterday,
     ], args.dry_run, f'Step 2: engine --window final for {yesterday}')
 

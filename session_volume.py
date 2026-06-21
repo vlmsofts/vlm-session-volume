@@ -476,8 +476,9 @@ def _rvol_line(tier_key: str, tier_data: dict) -> str:
         elif rvol <= 0.5:
             flag = '  *** LOW (<=0.5x)'
     note_str = f'  [{note}]' if note else ''
+    rvol_str = f'{rvol:.2f}x' if rvol is not None else 'n/a'
     return (f'  RVOL-{tier_key:>2}  avg={_fmt_n(avg):>9}  '
-            f'rvol={rvol:.2f}x{flag}{note_str}')
+            f'rvol={rvol_str}{flag}{note_str}')
 
 
 def build_report(commodity: str, session_date: str,
