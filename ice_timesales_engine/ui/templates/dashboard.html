@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VLM &mdash; ICE Session Volume</title>
+<script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+<style>
+  /* VLM master palette */
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#ffffff; font-family:Arial,sans-serif; color:#222222; }
+  .hdr { background:#1a1a2e; padding:22px 32px 18px; border-bottom:4px solid #c9a227;
+         display:flex; justify-content:space-between; align-items:flex-start; }
+  .hdr h1 { font-size:26px; font-weight:700; color:#fff; }
+  .hdr .sub { font-size:14px; color:#c9a227; letter-spacing:1px; text-transform:uppercase;
+              margin-top:4px; font-weight:600; }
+  .hdr .src { font-size:12px; color:#aaaaaa; margin-top:4px; }
+  .fresh { text-align:right; font-size:12px; color:#aaaaaa; }
+  .fresh .stamp { display:inline-block; padding:4px 10px; border-radius:4px;
+                  font-weight:700; font-size:11px; text-transform:uppercase; margin-top:6px; }
+  .fresh .live { background:#15803d; color:#fff; }
+  .fresh .stale { background:#c0392b; color:#fff; }
+  .controls { background:#f9f9f9; border-bottom:1px solid #e5e7eb; padding:14px 32px;
+              display:flex; flex-wrap:wrap; gap:14px; align-items:flex-end; }
+  .ctl { display:flex; flex-direction:column; gap:4px; }
+  .ctl label { font-size:10px; font-weight:700; color:#888888; text-transform:uppercase;
+               letter-spacing:1.5px; }
+  .ctl select, .ctl input { padding:6px 8px; border:1px solid #e5e7eb; border-radius:4px;
+                            font-size:13px; font-family:Arial,sans-serif; background:#fff; }
+  .types { display:flex; gap:8px; flex-wrap:wrap; }
+  .types label { font-size:12px; color:#444444; font-weight:600; text-transform:none;
+                 letter-spacing:0; display:flex; align-items:center; gap:4px; }
+  button.go { background:#c9a227; color:#1a1a2e; border:none; border-radius:4px;
+              padding:9px 22px; font-size:13px; font-weight:700; text-transform:uppercase;
+              letter-spacing:1px; cursor:pointer; }
+  button.go:hover { background:#b38a20; }
+  .banner { background:#c9a227; border-left:6px solid #1a1a2e; padding:8px 18px;
+            font-size:13px; font-weight:700; color:#1a1a2e; letter-spacing:2px;
+            text-transform:uppercase; margin-top:18px; }
+  .wrap { padding:0 32px 32px; }
+  .stats { display:flex; gap:14px; flex-wrap:wrap; margin-top:14px; }
+  .stat { background:#f9f9f9; border:1px solid #e5e7eb; border-radius:6px;
+          padding:14px 22px; min-width:150px; }
+  .stat .lbl { font-size:10px; font-weight:700; color:#888888; text-transform:uppercase;
+               letter-spacing:2px; }
+  .stat .val { font-size:26px; font-weight:700; color:#1a1a2e; margin-top:4px; }
+  table { border-collapse:collapse; width:100%; margin-top:14px; }
+  th { background:#f9f9f9; color:#888888; padding:8px 12px; text-align:right; font-size:12px;
+       text-transform:uppercase; letter-spacing:1px; font-weight:600;
+       border-bottom:2px solid #e5e7eb; }
+  th:first-child, td:first-child { text-align:left; }
+  td { padding:7px 12px; border-bottom:1px solid #e5e7eb; font-size:14px; font-weight:700;
+       text-align:right; color:#1a1a2e; }
+  tr:nth-child(even) td { background:#f9f9f9; }
+  .flag-ok { color:#15803d; } .flag-warn { color:#c0392b; }
+  #chart { margin-top:14px; height:380px; }
+  .ftr { background:#f9f9f9; border-top:1px solid #e5e7eb; padding:12px 32px;
+         display:flex; justify-content:space-between; font-size:11px; }
+  .ftr .l { font-weight:700; color:#888888; text-transform:uppercase; letter-spacing:1.5px; }
+  .ftr .r { color:#aaaaaa; }
+  .err { color:#c0392b; font-weight:700; padding:14px 0; }
+</style>
+</head>
+<body>
+<div class="hdr">
+  <div>
+    <h1>VLM Commodities &mdash; Cotton Desk</h1>
+    <div class="sub">ICE Time &amp; Sales &mdash; Session Volume</div>
+    <div class="src">ICE Futures U.S. tick tape &middot; EOD capture</div>
+  </div>
+  <div class="fresh" id="fresh">
+    <div id="fresh-line">&mdash;</div>
+    <span class="stamp stale" id="fresh-stamp">loading</span>
+  </div>
+</div>
+
+<div class="controls">
+  <div class="ctl"><label>Commodity</label>
+    <select id="cmd"></select></div>
+  <div class="ctl"><label>Session date</label>
+    <select id="date"></select></div>
+  <div class="ctl"><label>Window</label>
+    <select id="preset">
+      <option value="full">Full (21:00&rarr;14:20)</option>
+      <option value="night">Night (21:00&rarr;07:00)</option>
+      <option value="day">Day (07:00&rarr;14:20)</option>
+      <option value="custom">Custom&hellip;</option>
+    </select></div>
+  <div class="ctl" id="custom-ctls" style="display:none">
+    <label>Custom start / end (ET)</label>
+    <div style="display:flex;gap:6px">
+      <input id="cstart" type="time" value="09:00" step="60">
+      <input id="cend" type="time" value="10:30" step="60">
+    </div>
+  </div>
+  <div class="ctl"><label>Contracts</label>
+    <select id="contracts" multiple size="3" style="min-width:120px"></select></div>
+  <div class="ctl"><label>Bucket</label>
+    <select id="bucket">
+      <option value="1m">1 min</option>
+      <option value="5m">5 min</option>
+      <option value="15m" selected>15 min</option>
+      <option value="60m">60 min</option>
+    </select></div>
+  <div class="ctl"><label>Trade types (include)</label>
+    <div class="types" id="types">
+      <label><input type="checkbox" value="outright" checked>Outright</label>
+      <label><input type="checkbox" value="leg" checked>Leg</label>
+      <label><input type="checkbox" value="efs" checked>EFS</label>
+      <label><input type="checkbox" value="efp" checked>EFP</label>
+      <label><input type="checkbox" value="block" checked>Block</label>
+      <label><input type="checkbox" value="efs_delete">EFS-Delete</label>
+    </div></div>
+  <button class="go" onclick="runQuery()">Run</button>
+</div>
+
+<div class="wrap">
+  <div id="error" class="err" style="display:none"></div>
+  <div class="banner">Totals</div>
+  <div class="stats" id="stats"></div>
+  <div class="banner">Volume profile</div>
+  <div id="chart"></div>
+  <div class="banner">By contract</div>
+  <table id="tbl-contract"><thead>
+    <tr><th>Contract</th><th>Generic</th><th>Volume</th><th>Share</th></tr>
+  </thead><tbody></tbody></table>
+  <div class="banner">By trade type</div>
+  <table id="tbl-type"><thead>
+    <tr><th>Type</th><th>Volume</th><th>Share</th></tr>
+  </thead><tbody></tbody></table>
+</div>
+
+<div class="ftr">
+  <div class="l">VLM Commodities Ltd &middot; Cotton Desk</div>
+  <div class="r">vlmdata.com &middot; ICE session-volume engine</div>
+</div>
+
+<script>
+var CATALOG = null;
+
+function fmt(n) {
+  if (n === null || n === undefined) return '—';
+  return Math.round(n).toLocaleString();
+}
+
+function el(id) { return document.getElementById(id); }
+
+function selectedTypes() {
+  return Array.from(document.querySelectorAll('#types input:checked'))
+              .map(function(c) { return c.value; }).join(',');
+}
+function selectedContracts() {
+  var v = Array.from(el('contracts').selectedOptions).map(function(o){ return o.value; });
+  return v.length ? v.join(',') : 'all';
+}
+
+function loadCatalog() {
+  fetch('/v1/sessionvol/catalog').then(function(r){ return r.json(); }).then(function(cat) {
+    CATALOG = cat;
+    el('cmd').innerHTML = cat.commodities
+      .filter(function(c){ return c.available_dates.length; })
+      .map(function(c){ return '<option value="'+c.code+'">'+c.code+' — '+c.name+'</option>'; })
+      .join('') || '<option value="CT">CT</option>';
+    onCmdChange();
+    el('cmd').onchange = onCmdChange;
+    el('preset').onchange = function() {
+      el('custom-ctls').style.display = el('preset').value === 'custom' ? '' : 'none';
+    };
+  });
+}
+
+function onCmdChange() {
+  var code = el('cmd').value;
+  var c = (CATALOG.commodities || []).find(function(x){ return x.code === code; });
+  var dates = c ? c.available_dates.slice().reverse() : [];
+  el('date').innerHTML = dates.map(function(d){ return '<option>'+d+'</option>'; }).join('');
+  var f = c ? c.freshness : null;
+  if (f) {
+    el('fresh-line').textContent = 'latest session ' + (f.latest_session || '—')
+      + ' · ingested ' + (f.last_ingest_at || '—');
+    var s = el('fresh-stamp');
+    s.textContent = f.stale ? 'stale' : 'current';
+    s.className = 'stamp ' + (f.stale ? 'stale' : 'live');
+  }
+  loadContracts();
+  el('date').onchange = loadContracts;
+}
+
+function loadContracts() {
+  var q = '/v1/sessionvol/' + el('cmd').value + '/contracts?date=' + el('date').value;
+  fetch(q).then(function(r){ return r.json(); }).then(function(res) {
+    el('contracts').innerHTML = (res.contracts || []).map(function(c) {
+      var g = c.generic_code ? ' ('+c.generic_code+')' : '';
+      return '<option value="'+c.ice_code+'">'+c.ice_code+g+'</option>';
+    }).join('');
+  });
+}
+
+function windowParams() {
+  var p = el('preset').value;
+  if (p === 'custom') {
+    return 'start=' + el('cstart').value + '&end=' + el('cend').value;
+  }
+  return 'preset=' + p;
+}
+
+function runQuery() {
+  el('error').style.display = 'none';
+  var cmd = el('cmd').value, d = el('date').value;
+  var base = '&date=' + d + '&contracts=' + selectedContracts() + '&types=' + selectedTypes();
+  var wq = fetch('/v1/sessionvol/'+cmd+'/window?'+windowParams()+base)
+             .then(function(r){ return r.json(); });
+  var pq = fetch('/v1/sessionvol/'+cmd+'/profile?'+windowParams()+base
+                 +'&bucket='+el('bucket').value)
+             .then(function(r){ return r.json(); });
+  Promise.all([wq, pq]).then(function(res) {
+    var w = res[0], p = res[1];
+    if (w.error) { el('error').textContent = w.error; el('error').style.display=''; return; }
+    renderStats(w); renderTables(w); renderChart(p);
+  }).catch(function(e) {
+    el('error').textContent = 'Query failed: ' + e; el('error').style.display = '';
+  });
+}
+
+function renderStats(w) {
+  var t = w.totals;
+  el('stats').innerHTML =
+    '<div class="stat"><div class="lbl">Total (selected)</div><div class="val">'+fmt(t.all)+'</div></div>'
+    + '<div class="stat"><div class="lbl">Outright</div><div class="val">'+fmt(t.by_type.outright)+'</div></div>'
+    + '<div class="stat"><div class="lbl">Leg</div><div class="val">'+fmt(t.by_type.leg)+'</div></div>'
+    + '<div class="stat"><div class="lbl">EFS + EFP</div><div class="val">'
+      + fmt((t.by_type.efs||0)+(t.by_type.efp||0)) + '</div></div>'
+    + '<div class="stat"><div class="lbl">Window</div><div class="val" style="font-size:15px">'
+      + w.window.start.slice(5,16).replace('T',' ') + ' → '
+      + w.window.end.slice(5,16).replace('T',' ') + '</div></div>';
+}
+
+function renderTables(w) {
+  var t = w.totals, total = t.all || 1;
+  var cb = Object.entries(t.by_contract).sort(function(a,b){ return b[1]-a[1]; });
+  el('tbl-contract').querySelector('tbody').innerHTML = cb.map(function(kv) {
+    return '<tr><td>'+kv[0]+'</td><td></td><td>'+fmt(kv[1])+'</td><td>'
+      + (100*kv[1]/total).toFixed(1) + '%</td></tr>';
+  }).join('');
+  var tb = Object.entries(t.by_type)
+    .filter(function(kv){ return kv[1] > 0; })
+    .sort(function(a,b){ return b[1]-a[1]; });
+  el('tbl-type').querySelector('tbody').innerHTML = tb.map(function(kv) {
+    return '<tr><td>'+kv[0]+'</td><td>'+fmt(kv[1])+'</td><td>'
+      + (100*kv[1]/total).toFixed(1) + '%</td></tr>';
+  }).join('');
+}
+
+function renderChart(p) {
+  if (p.error || !p.profile) { return; }
+  Plotly.newPlot('chart', [{
+    x: p.profile.map(function(r){ return r.bucket_ts.replace('T',' '); }),
+    y: p.profile.map(function(r){ return r.sum_size; }),
+    type: 'bar', marker: { color: '#c9a227' },
+    hovertemplate: '%{x}<br>%{y:,.0f} lots<extra></extra>'
+  }], {
+    margin: { t: 10, r: 20, b: 70, l: 60 },
+    xaxis: { tickangle: -45, tickfont: { size: 10, family: 'Arial' } },
+    yaxis: { title: 'Volume (lots)', gridcolor: '#e5e7eb' },
+    plot_bgcolor: '#ffffff', paper_bgcolor: '#ffffff',
+    font: { family: 'Arial, sans-serif', color: '#222222' }
+  }, { displayModeBar: false, responsive: true });
+}
+
+loadCatalog();
+</script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+flask>=3.0
+pytest>=8.0
+# Production (Supabase Postgres + Railway) only -- local dev/tests run on
+# stdlib sqlite3 and need neither:
+psycopg[binary]>=3.1
+gunicorn>=21.0

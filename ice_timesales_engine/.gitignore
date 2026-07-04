@@ -1,0 +1,16 @@
+# ── Derived data (DB + rollup outputs; regenerable from the ICE records) ──
+data/
+
+# ── Python bytecode / caches ──
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# ── Runtime logs ──
+logs/
+
+# ── Editor / OS scratch ──
+*.bak
+*.tmp
+*.swp
+*~
