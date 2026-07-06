@@ -32,11 +32,11 @@ $env:DATABASE_URL = "postgresql://postgres:<password>@db.<ref>.supabase.co:5432/
 cd "C:\Users\Louis\OneDrive - VLM Commodities LTD\Desktop\VLM_Session_Volume_Project\ice_timesales_engine"
 python -m jobs.migrate_to_cloud
 ```
-(If `jobs/migrate_to_cloud.py` does not exist yet when you run this, tell the
-session "write the cloud migration job" — it is a ~50-line copy script:
-connect local SQLite, connect DATABASE_URL, create schema, batch-insert the
-six tables. It was deliberately NOT written in advance so nothing cloud-
-touching exists until you ask.)
+(Written + guard-tested 2026-07-05: it hard-refuses to run unless
+DATABASE_URL is set in the window — no default, no stored credential. If any
+engine table already has rows on Supabase it ABORTS; re-run with `--replace`
+to wipe the SIX ENGINE TABLES ONLY and copy fresh. Postgres driver
+psycopg 3.3.4 is installed. Local SQLite is read-only to this job.)
 
 ## Step 4 — make it stick (only after Step 3 verifies)
 - Local daily job: add `DATABASE_URL` to this machine's user environment
