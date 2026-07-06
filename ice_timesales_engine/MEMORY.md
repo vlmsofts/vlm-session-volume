@@ -93,3 +93,32 @@ against live files 2026-07-04.
    `to_generic` returns None for softs today — tape still ingests fine).
 4. Decide with Lou whether the ICE rollup ever merges into the shared
    VLM_Session_Volume_Project history files (blast-radius gate).
+
+## 2026-07-05 — bar5m archive + Bloomberg 6.4-month seed (built, verified, live)
+
+**What:** permanent 5-minute archive table `bar5m`, source-labeled
+(`ice`|`bloomberg`), never mixed. Lou rulings encoded: 5-min is the minimum
+grain he will ever query; Supabase step is Lou-executed only
+(SUPABASE_RUNBOOK_LOU.md — nothing cloud-touching runs automatically).
+- `ingest/bbg_map.py`: Bloomberg conditionCodes → primary_type (verified to
+  the exact lot vs the ICE tape on 07-01/07-02; residual 'I' → 'other',
+  never absorbed; `includeNonPlottableEvents=True` is MANDATORY or Bloomberg
+  hides all leg/EFS/EFP/block prints).
+- `ingest/bar5m.py`: rollup_ice_bar5m (from minute_agg, delete+reinsert per
+  day) + replace_bloomberg_day. daily_ingest now emits bar5m after minute_agg.
+- `jobs/seed_bloomberg.py`: one-shot seed, DATED tickers (generics stitch by
+  today's mapping — unusable across rolls), UTC→ET, session-date = ET>=21:00
+  rolls to next trading day, 21-day chunks, strictly sequential requests.
+
+**Seeded + verified:** 1,211 contract-days, 10,162,374 lots, 10 CT contracts,
+2025-12-22 → 2026-07-02 (Bloomberg's measured tick-retention wall), zero
+holiday rows, DB 51.7 MB. Acceptance: CTZ6 07-02 night 3,667 / day 14,699 ==
+locked ICE numbers; every trade-type bucket exact on both smoke days.
+Split: outright 5.70M / leg 4.00M / efs 295k / block 61k / efp 59k /
+efs_delete 8k / other 45k (0.45%).
+
+**Why:** Bloomberg only retains ~6.4mo of intraday ticks; ICE files are
+forward-only. Seed once, grow forward with ICE (which carries the trade-type
+tags natively). **Rejected:** generic tickers for the seed (roll ambiguity);
+seeding into `ticks` (no seq_num, would pollute the tape tables); R2/parquet
+tiering (5-min grain makes the whole multi-year archive <1GB — unnecessary).

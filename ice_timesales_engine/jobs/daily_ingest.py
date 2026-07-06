@@ -26,6 +26,7 @@ import config                                            # noqa: E402
 from api.cache import purge_day                          # noqa: E402
 from ingest import discover, reconcile, rollup, spreads  # noqa: E402
 from ingest.aggregator import rebuild_minute_agg         # noqa: E402
+from ingest.bar5m import rollup_ice_bar5m                # noqa: E402
 from ingest.blotter_parser import file_sha256, read_blotter  # noqa: E402
 from ingest.loader import IngestMeta, already_ingested, record_ingest, upsert_ticks  # noqa: E402
 from ingest.normalize import normalize_contract, normalize_tick  # noqa: E402
@@ -72,6 +73,8 @@ def ingest_day(db, commodity: str, session_date: str) -> dict:
 
     n_agg = rebuild_minute_agg(db, cmd, session_date)
     print(f'  minute_agg rebuilt: {n_agg} buckets.')
+    n_b5 = rollup_ice_bar5m(db, cmd, session_date)
+    print(f'  bar5m archive (source=ice): {n_b5} buckets.')
     spreads.ingest_block_volume(db, cmd, session_date,
                                 discover.spreads_path(cmd, session_date))
     n_rec = reconcile.build_reconcile(db, cmd, session_date,
