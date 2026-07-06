@@ -12,6 +12,15 @@ touches nothing your other dashboards use — the engine's tables are its own
 (`ticks`, `minute_agg`, `bar5m`, `ingest_log`, `reconcile_flags`,
 `block_supplement`) and don't exist in Supabase today.
 
+## Before you start — check Supabase status
+2026-07-04/05: an active Supabase platform incident (capacity/restarts across
+regions, tracked at https://status.supabase.com) caused password-auth
+failures on a freshly-reset database password — confirmed NOT a code or
+connection-string issue (psycopg parsed the URL correctly, region/host/user
+all verified byte-for-byte). If Step 3 fails with "password authentication
+failed" right after a reset, check status.supabase.com FIRST before
+resetting again — retrying against an active incident just wastes resets.
+
 ## Step 1 — get the connection string (2 minutes, Supabase website)
 1. Go to https://supabase.com/dashboard → your project.
 2. Left sidebar → **Project Settings** (gear) → **Database**.
