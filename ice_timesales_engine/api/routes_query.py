@@ -78,13 +78,18 @@ def window(cmd):
         totals = {'all': 0.0, 'clean': 0.0, 'by_type': {}, 'by_contract': {}}
         resolved = None
         per_date = {}
+        cutoff = repo.bloomberg_cutoff(_db(), cmd)
         for d in dates:
             w = win.resolve(d, preset=request.args.get('preset'),
                             start=request.args.get('start'),
                             end=request.args.get('end'))
             resolved = w
+            # Source rule C: seed-era dates from bar5m bloomberg, later
+            # dates from the live ICE tables -- one source per era.
+            src = 'bloomberg' if (cutoff and d <= cutoff) else None
             r = repo.window_sum(_db(), cmd, w['start'], w['end'],
-                                contracts=contracts, types=types)
+                                contracts=contracts, types=types,
+                                session_date=d, source=src)
             per_date[d] = r
             totals['all'] += r['all']
             totals['clean'] += r['clean']
@@ -111,26 +116,58 @@ def window(cmd):
 
 @bp.get('/<cmd>/profile')
 def profile(cmd):
+    """Single date (date=) -> {profile: [...]}, unchanged.
+    Range (from=&to=) -> {per_date: {date: [...]}} -- the SAME window preset/
+    custom bounds are resolved per session date, so day/night/custom filters
+    behave identically in every view mode. The client stitches (continuous)
+    or overlays (compare) the per-date series."""
     cmd = cmd.upper()
-    d = request.args.get('date')
-    if not d:
-        return jsonify({'error': 'date=YYYY-MM-DD required'}), 400
+    dates = _dates_param(cmd)
+    if not dates:
+        return jsonify({'error': 'date=YYYY-MM-DD or from=&to= required'}), 400
     try:
         bucket = {'1m': 1, '5m': 5, '15m': 15, '60m': 60}[
             request.args.get('bucket', '15m')]
     except KeyError:
         return jsonify({'error': 'bucket must be 1m|5m|15m|60m'}), 400
     try:
-        w = win.resolve(d, preset=request.args.get('preset', 'full'),
-                        start=request.args.get('start'),
-                        end=request.args.get('end'))
         types = _csv_param('types')
-        rows = repo.profile(_db(), cmd, w['start'], w['end'], bucket,
-                            contracts=_csv_param('contracts'),
-                            types=[t.lower() for t in types] if types else None)
-        return _respond({'commodity': cmd, 'date': d, 'window': w,
-                         'bucket_minutes': bucket, 'profile': rows,
-                         'freshness': _freshness(cmd, [d])}, [d], cmd)
+        types = [t.lower() for t in types] if types else None
+        contracts = _csv_param('contracts')
+
+        # Only fall back to the 'full' preset when NO custom start/end was
+        # given -- otherwise the default preset would silently override the
+        # caller's custom window (win.resolve checks preset first).
+        c_start, c_end = request.args.get('start'), request.args.get('end')
+        preset = request.args.get('preset') or (None if (c_start and c_end) else 'full')
+
+        cutoff = repo.bloomberg_cutoff(_db(), cmd)
+        per_date, windows = {}, {}
+        seed_dates = 0
+        for d in dates:
+            w = win.resolve(d, preset=preset, start=c_start, end=c_end)
+            windows[d] = w
+            # Source rule C: seed-era dates from bar5m bloomberg, later
+            # dates from the live ICE tables -- one source per era.
+            src = 'bloomberg' if (cutoff and d <= cutoff) else None
+            seed_dates += bool(src)
+            per_date[d] = repo.profile(_db(), cmd, w['start'], w['end'], bucket,
+                                       contracts=contracts, types=types,
+                                       session_date=d, source=src)
+
+        payload = {'commodity': cmd, 'dates': dates,
+                   'bucket_minutes': bucket,
+                   'freshness': _freshness(cmd, dates)}
+        # Seed grain is 5 min -- flag when a finer request was coarsened.
+        if seed_dates and bucket < 5:
+            payload['bucket_minutes_effective'] = 5
+        if len(dates) == 1:
+            d = dates[0]
+            payload.update({'date': d, 'window': windows[d],
+                            'profile': per_date[d]})
+        else:
+            payload.update({'windows': windows, 'per_date': per_date})
+        return _respond(payload, dates, cmd)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
 
@@ -141,8 +178,10 @@ def contracts(cmd):
     d = request.args.get('date')
     if not d:
         return jsonify({'error': 'date=YYYY-MM-DD required'}), 400
+    cutoff = repo.bloomberg_cutoff(_db(), cmd)
+    src = 'bloomberg' if (cutoff and d <= cutoff) else None
     return _respond({'commodity': cmd, 'date': d,
-                     'contracts': repo.traded_contracts(_db(), cmd, d),
+                     'contracts': repo.traded_contracts(_db(), cmd, d, source=src),
                      'freshness': _freshness(cmd, [d])}, [d], cmd)
 
 

@@ -34,3 +34,21 @@ the DDL header: never put `;` inside a comment in that file.
 
 **Note:** if the schema ever needs literals containing `;`, replace the naive
 split with a proper statement splitter first.
+
+## 2026-07-14 — stale server on :5062 kept serving old code
+
+**Didn't work:** editing api/routes_query.py then testing against
+http://127.0.0.1:5062 — the OLD error text came back. A previous engine
+instance was still LISTENING on 5062, and Start-Process launched a second
+python that silently lost the port race. First kill attempt ALSO failed:
+there were multiple listener PIDs (Flask parent+child) — killing one left
+the port busy.
+
+**Worked instead:** enumerate ALL PIDs via Get-NetTCPConnection -LocalPort
+5062 -State Listen, kill every one, loop until the port reads free, THEN
+start — and prove the new code is live by hitting a code path whose response
+text changed.
+
+**Note:** Start_Session_Volume.bat intentionally reuses an already-running
+server (that's its design). After ANY code change, kill the listeners first
+or the "restart" is a no-op.

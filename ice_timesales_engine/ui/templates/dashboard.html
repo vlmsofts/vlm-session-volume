@@ -77,8 +77,27 @@
 <div class="controls">
   <div class="ctl"><label>Commodity</label>
     <select id="cmd"></select></div>
-  <div class="ctl"><label>Session date</label>
+  <div class="ctl"><label>View</label>
+    <select id="view">
+      <option value="single">Single day</option>
+      <option value="continuous">Continuous (stitched)</option>
+      <option value="overlay">Overlay (compare days)</option>
+      <option value="ab">Compare two days (A vs B)</option>
+      <option value="totals">Daily totals</option>
+    </select></div>
+  <div class="ctl" id="ctl-date"><label>Session date</label>
     <select id="date"></select></div>
+  <div class="ctl" id="ctl-range" style="display:none"><label>From / to (session date)</label>
+    <div style="display:flex;gap:6px">
+      <select id="dfrom"></select>
+      <select id="dto"></select>
+    </div></div>
+  <div class="ctl" id="ctl-ab" style="display:none"><label>Day A vs Day B</label>
+    <div style="display:flex;gap:6px;align-items:center">
+      <select id="dayA"></select>
+      <span style="font-size:11px;color:#888;font-weight:700">vs</span>
+      <select id="dayB"></select>
+    </div></div>
   <div class="ctl"><label>Window</label>
     <select id="preset">
       <option value="full">Full (21:00&rarr;14:20)</option>
@@ -162,18 +181,48 @@ function loadCatalog() {
       .map(function(c){ return '<option value="'+c.code+'">'+c.code+' — '+c.name+'</option>'; })
       .join('') || '<option value="CT">CT</option>';
     onCmdChange();
+    onViewChange();
     el('cmd').onchange = onCmdChange;
+    el('view').onchange = onViewChange;
     el('preset').onchange = function() {
       el('custom-ctls').style.display = el('preset').value === 'custom' ? '' : 'none';
     };
   });
 }
 
+// Three control shapes: one date (single), a from/to range (continuous,
+// overlay, totals), or two discrete dates (ab).
+function isAB()    { return el('view').value === 'ab'; }
+function isRange() { var v = el('view').value; return v !== 'single' && v !== 'ab'; }
+function isMulti() { return el('view').value !== 'single'; }
+
+function onViewChange() {
+  el('ctl-date').style.display  = (el('view').value === 'single') ? '' : 'none';
+  el('ctl-range').style.display = isRange() ? '' : 'none';
+  el('ctl-ab').style.display    = isAB() ? '' : 'none';
+  // Bucket is meaningless for daily totals (one point per session).
+  el('bucket').disabled = (el('view').value === 'totals');
+  loadContracts();   // seed date differs per mode
+}
+
 function onCmdChange() {
   var code = el('cmd').value;
   var c = (CATALOG.commodities || []).find(function(x){ return x.code === code; });
   var dates = c ? c.available_dates.slice().reverse() : [];
-  el('date').innerHTML = dates.map(function(d){ return '<option>'+d+'</option>'; }).join('');
+  var opts = dates.map(function(d){ return '<option>'+d+'</option>'; }).join('');
+  el('date').innerHTML = opts;
+  el('dfrom').innerHTML = opts;
+  el('dto').innerHTML = opts;
+  el('dayA').innerHTML = opts;
+  el('dayB').innerHTML = opts;
+  // Default range = last 10 sessions (dates are newest-first here).
+  if (dates.length) {
+    el('dto').value = dates[0];
+    el('dfrom').value = dates[Math.min(9, dates.length - 1)];
+    // A vs B defaults to the two most recent sessions (B = newest).
+    el('dayB').value = dates[0];
+    el('dayA').value = dates[Math.min(1, dates.length - 1)];
+  }
   var f = c ? c.freshness : null;
   if (f) {
     el('fresh-line').textContent = 'latest session ' + (f.latest_session || '—')
@@ -184,10 +233,19 @@ function onCmdChange() {
   }
   loadContracts();
   el('date').onchange = loadContracts;
+  el('dto').onchange = loadContracts;
+  el('dayB').onchange = loadContracts;
 }
 
 function loadContracts() {
-  var q = '/v1/sessionvol/' + el('cmd').value + '/contracts?date=' + el('date').value;
+  // Contract picker is seeded from ONE session: the selected day (single),
+  // the range's end date (range views), or day B (A-vs-B) -- always the
+  // newest of the selection, i.e. the most relevant contract chain.
+  var d = isAB() ? el('dayB').value
+        : isRange() ? el('dto').value
+        : el('date').value;
+  if (!d) return;
+  var q = '/v1/sessionvol/' + el('cmd').value + '/contracts?date=' + d;
   fetch(q).then(function(r){ return r.json(); }).then(function(res) {
     el('contracts').innerHTML = (res.contracts || []).map(function(c) {
       var g = c.generic_code ? ' ('+c.generic_code+')' : '';
@@ -204,22 +262,261 @@ function windowParams() {
   return 'preset=' + p;
 }
 
+function showErr(msg) {
+  el('error').textContent = msg;
+  el('error').style.display = '';
+}
+
 function runQuery() {
   el('error').style.display = 'none';
-  var cmd = el('cmd').value, d = el('date').value;
-  var base = '&date=' + d + '&contracts=' + selectedContracts() + '&types=' + selectedTypes();
+  if (isAB()) { return runQueryAB(); }
+
+  var cmd = el('cmd').value, view = el('view').value;
+
+  // Date selector: one day, or an inclusive from/to range.
+  var dq;
+  if (isRange()) {
+    var a = el('dfrom').value, b = el('dto').value;
+    if (a > b) { var t = a; a = b; b = t; }   // tolerate reversed picks
+    dq = '&from=' + a + '&to=' + b;
+  } else {
+    dq = '&date=' + el('date').value;
+  }
+  var base = dq + '&contracts=' + selectedContracts() + '&types=' + selectedTypes();
+
   var wq = fetch('/v1/sessionvol/'+cmd+'/window?'+windowParams()+base)
              .then(function(r){ return r.json(); });
   var pq = fetch('/v1/sessionvol/'+cmd+'/profile?'+windowParams()+base
                  +'&bucket='+el('bucket').value)
              .then(function(r){ return r.json(); });
+
   Promise.all([wq, pq]).then(function(res) {
     var w = res[0], p = res[1];
-    if (w.error) { el('error').textContent = w.error; el('error').style.display=''; return; }
-    renderStats(w); renderTables(w); renderChart(p);
+    if (w.error) { showErr(w.error); return; }
+    if (p.error) { showErr(p.error); return; }
+    renderStats(w); renderTables(w);
+    if (view === 'single')          renderChart(p);
+    else if (view === 'continuous') renderContinuous(p);
+    else if (view === 'overlay')    renderOverlay(p);
+    else if (view === 'totals')     renderTotals(w);
   }).catch(function(e) {
-    el('error').textContent = 'Query failed: ' + e; el('error').style.display = '';
+    showErr('Query failed: ' + e);
   });
+}
+
+// A vs B: two ARBITRARY sessions (e.g. today vs the same weekday last month).
+// Fetched as two independent single-date queries -- a from/to range would drag
+// in every session between them.
+function runQueryAB() {
+  var cmd = el('cmd').value;
+  var A = el('dayA').value, B = el('dayB').value;
+  if (!A || !B) { showErr('Pick both day A and day B.'); return; }
+  if (A === B)  { showErr('Day A and day B are the same session — pick two different days.'); return; }
+
+  var filt = '&contracts=' + selectedContracts() + '&types=' + selectedTypes();
+  var wp = windowParams(), bk = '&bucket=' + el('bucket').value;
+
+  function prof(d) {
+    return fetch('/v1/sessionvol/'+cmd+'/profile?'+wp+'&date='+d+filt+bk)
+             .then(function(r){ return r.json(); });
+  }
+  function wind(d) {
+    return fetch('/v1/sessionvol/'+cmd+'/window?'+wp+'&date='+d+filt)
+             .then(function(r){ return r.json(); });
+  }
+
+  Promise.all([prof(A), prof(B), wind(A), wind(B)]).then(function(res) {
+    var pA = res[0], pB = res[1], wA = res[2], wB = res[3];
+    var bad = [pA, pB, wA, wB].find(function(x){ return x && x.error; });
+    if (bad) { showErr(bad.error); return; }
+    renderABStats(A, B, wA, wB);
+    renderABTables(A, B, wA, wB);
+    renderAB(A, B, pA, pB);
+  }).catch(function(e) {
+    showErr('Query failed: ' + e);
+  });
+}
+
+// Two lines (A, B) on a time-of-day axis + a delta row (B - A) underneath.
+// Delta is what makes this a comparison rather than two charts on top of each
+// other: green = B heavier at that bucket, red = A heavier.
+function renderAB(A, B, pA, pB) {
+  var mapA = {}, mapB = {};
+  (pA.profile || []).forEach(function(r){ mapA[r.bucket_ts.slice(11,16)] = r.sum_size; });
+  (pB.profile || []).forEach(function(r){ mapB[r.bucket_ts.slice(11,16)] = r.sum_size; });
+
+  // Union of clock times, so a bucket present in only one day still shows
+  // (as a full-size delta) rather than being silently dropped.
+  var times = Object.keys(mapA).concat(Object.keys(mapB))
+                .filter(function(v, i, a){ return a.indexOf(v) === i; })
+                .sort();
+
+  var yA = times.map(function(t){ return mapA[t] || 0; });
+  var yB = times.map(function(t){ return mapB[t] || 0; });
+  var dl = times.map(function(t){ return (mapB[t] || 0) - (mapA[t] || 0); });
+
+  Plotly.newPlot('chart', [
+    { x: times, y: yA, name: 'A  ' + A, type: 'scatter', mode: 'lines',
+      line: { color: '#6b7280', width: 2 },
+      hovertemplate: A + ' %{x}<br>%{y:,.0f} lots<extra></extra>' },
+    { x: times, y: yB, name: 'B  ' + B, type: 'scatter', mode: 'lines',
+      line: { color: '#c9a227', width: 3 },
+      hovertemplate: B + ' %{x}<br>%{y:,.0f} lots<extra></extra>' },
+    { x: times, y: dl, name: 'B − A', type: 'bar',
+      xaxis: 'x', yaxis: 'y2',
+      marker: { color: dl.map(function(v){ return v >= 0 ? '#15803d' : '#c0392b'; }) },
+      hovertemplate: 'B − A  %{x}<br>%{y:+,.0f} lots<extra></extra>' }
+  ], {
+    margin: { t: 10, r: 20, b: 70, l: 60 },
+    xaxis: { title: 'Time of day (ET)', tickangle: -45,
+             tickfont: { size: 10, family: 'Arial' }, domain: [0, 1] },
+    // Top 68% = the two curves; bottom 26% = the delta bars.
+    yaxis:  { title: 'Volume (lots)', gridcolor: '#e5e7eb', domain: [0.32, 1] },
+    yaxis2: { title: 'B − A', gridcolor: '#e5e7eb', domain: [0, 0.26],
+              zeroline: true, zerolinecolor: '#888888', zerolinewidth: 1 },
+    legend: { orientation: 'h', y: 1.12, font: { size: 11 } },
+    plot_bgcolor: '#ffffff', paper_bgcolor: '#ffffff',
+    font: { family: 'Arial, sans-serif', color: '#222222' }
+  }, { displayModeBar: false, responsive: true });
+}
+
+// Head-to-head stat row: each day's total + the signed difference.
+function renderABStats(A, B, wA, wB) {
+  var tA = wA.totals.all || 0, tB = wB.totals.all || 0;
+  var d = tB - tA;
+  var pct = tA ? (100 * d / tA) : 0;
+  var col = d >= 0 ? '#15803d' : '#c0392b';
+  var sign = d >= 0 ? '+' : '';
+  el('stats').innerHTML =
+      '<div class="stat"><div class="lbl">A &middot; ' + A + '</div><div class="val">' + fmt(tA) + '</div></div>'
+    + '<div class="stat"><div class="lbl">B &middot; ' + B + '</div><div class="val">' + fmt(tB) + '</div></div>'
+    + '<div class="stat"><div class="lbl">B &minus; A</div><div class="val" style="color:' + col + '">'
+      + sign + fmt(d) + '</div></div>'
+    + '<div class="stat"><div class="lbl">B vs A</div><div class="val" style="color:' + col + '">'
+      + sign + pct.toFixed(1) + '%</div></div>'
+    + '<div class="stat"><div class="lbl">Window (each)</div><div class="val" style="font-size:15px">'
+      + wB.window.start.slice(11,16) + ' → ' + wB.window.end.slice(11,16) + '</div></div>';
+}
+
+// By-type and by-contract tables become A | B | delta in this mode.
+function renderABTables(A, B, wA, wB) {
+  function rows(getA, getB) {
+    var keys = Object.keys(getA).concat(Object.keys(getB))
+                 .filter(function(v, i, a){ return a.indexOf(v) === i; });
+    return keys.map(function(k) {
+      var a = getA[k] || 0, b = getB[k] || 0;
+      return { k: k, a: a, b: b, d: b - a };
+    }).sort(function(x, y){ return (y.a + y.b) - (x.a + x.b); });
+  }
+  function cell(d) {
+    var col = d >= 0 ? '#15803d' : '#c0392b';
+    return '<td style="color:' + col + '">' + (d >= 0 ? '+' : '') + fmt(d) + '</td>';
+  }
+
+  var ct = rows(wA.totals.by_contract, wB.totals.by_contract);
+  el('tbl-contract').querySelector('thead').innerHTML =
+    '<tr><th>Contract</th><th>A ' + A + '</th><th>B ' + B + '</th><th>B − A</th></tr>';
+  el('tbl-contract').querySelector('tbody').innerHTML = ct.map(function(r) {
+    return '<tr><td>' + r.k + '</td><td>' + fmt(r.a) + '</td><td>' + fmt(r.b) + '</td>'
+         + cell(r.d) + '</tr>';
+  }).join('');
+
+  var tt = rows(wA.totals.by_type, wB.totals.by_type)
+             .filter(function(r){ return r.a > 0 || r.b > 0; });
+  el('tbl-type').querySelector('thead').innerHTML =
+    '<tr><th>Type</th><th>A ' + A + '</th><th>B ' + B + '</th><th>B − A</th></tr>';
+  el('tbl-type').querySelector('tbody').innerHTML = tt.map(function(r) {
+    return '<tr><td>' + r.k + '</td><td>' + fmt(r.a) + '</td><td>' + fmt(r.b) + '</td>'
+         + cell(r.d) + '</tr>';
+  }).join('');
+}
+
+// Sorted session dates present in a multi-date /profile payload.
+function profileDates(p) {
+  return Object.keys(p.per_date || {}).sort();
+}
+
+// CONTINUOUS: stitch every session's in-window buckets end-to-end on a
+// CATEGORICAL x-axis, so the 14:20->21:00 dead zone is compressed out
+// (matches the Bloomberg-style chart). Bar text carries the real timestamp.
+function renderContinuous(p) {
+  var dates = profileDates(p), x = [], y = [], txt = [];
+  dates.forEach(function(d) {
+    (p.per_date[d] || []).forEach(function(r) {
+      x.push(d + ' ' + r.bucket_ts.slice(11, 16));
+      y.push(r.sum_size);
+      txt.push(d + ' ' + r.bucket_ts.slice(11, 16));
+    });
+  });
+  Plotly.newPlot('chart', [{
+    x: x.map(function(_, i){ return i; }),   // index -> no gaps
+    y: y, text: txt, type: 'bar',
+    marker: { color: '#c9a227' },
+    hovertemplate: '%{text}<br>%{y:,.0f} lots<extra></extra>'
+  }], {
+    margin: { t: 10, r: 20, b: 80, l: 60 },
+    xaxis: {
+      // One tick per session, placed at that session's first bucket.
+      tickmode: 'array',
+      tickvals: (function() {
+        var v = [], i = 0;
+        dates.forEach(function(d) { v.push(i); i += (p.per_date[d] || []).length; });
+        return v;
+      })(),
+      ticktext: dates,
+      tickangle: -45, tickfont: { size: 10, family: 'Arial' }
+    },
+    yaxis: { title: 'Volume (lots)', gridcolor: '#e5e7eb' },
+    plot_bgcolor: '#ffffff', paper_bgcolor: '#ffffff',
+    font: { family: 'Arial, sans-serif', color: '#222222' }
+  }, { displayModeBar: false, responsive: true });
+}
+
+// OVERLAY: one line per session, x-axis = time-of-day, so day shapes compare
+// directly. Most recent session drawn in gold and heaviest.
+function renderOverlay(p) {
+  var dates = profileDates(p);
+  var traces = dates.map(function(d, i) {
+    var newest = (i === dates.length - 1);
+    return {
+      x: (p.per_date[d] || []).map(function(r){ return r.bucket_ts.slice(11, 16); }),
+      y: (p.per_date[d] || []).map(function(r){ return r.sum_size; }),
+      name: d, type: 'scatter', mode: 'lines',
+      line: { width: newest ? 3 : 1.5,
+              color: newest ? '#c9a227' : undefined },
+      opacity: newest ? 1 : 0.55,
+      hovertemplate: d + ' %{x}<br>%{y:,.0f} lots<extra></extra>'
+    };
+  });
+  Plotly.newPlot('chart', traces, {
+    margin: { t: 10, r: 20, b: 70, l: 60 },
+    xaxis: { title: 'Time of day (ET)', tickangle: -45,
+             tickfont: { size: 10, family: 'Arial' } },
+    yaxis: { title: 'Volume (lots)', gridcolor: '#e5e7eb' },
+    legend: { font: { size: 10 } },
+    plot_bgcolor: '#ffffff', paper_bgcolor: '#ffffff',
+    font: { family: 'Arial, sans-serif', color: '#222222' }
+  }, { displayModeBar: false, responsive: true });
+}
+
+// DAILY TOTALS: one bar per session date -- in-window total volume, from the
+// /window endpoint's per_date breakdown.
+function renderTotals(w) {
+  var pd = w.per_date || {};
+  var dates = Object.keys(pd).sort();
+  Plotly.newPlot('chart', [{
+    x: dates,
+    y: dates.map(function(d){ return pd[d].all; }),
+    type: 'bar', marker: { color: '#c9a227' },
+    hovertemplate: '%{x}<br>%{y:,.0f} lots<extra></extra>'
+  }], {
+    margin: { t: 10, r: 20, b: 70, l: 60 },
+    xaxis: { type: 'category', tickangle: -45,
+             tickfont: { size: 10, family: 'Arial' } },
+    yaxis: { title: 'Volume (lots)', gridcolor: '#e5e7eb' },
+    plot_bgcolor: '#ffffff', paper_bgcolor: '#ffffff',
+    font: { family: 'Arial, sans-serif', color: '#222222' }
+  }, { displayModeBar: false, responsive: true });
 }
 
 function renderStats(w) {
@@ -230,13 +527,37 @@ function renderStats(w) {
     + '<div class="stat"><div class="lbl">Leg</div><div class="val">'+fmt(t.by_type.leg)+'</div></div>'
     + '<div class="stat"><div class="lbl">EFS + EFP</div><div class="val">'
       + fmt((t.by_type.efs||0)+(t.by_type.efp||0)) + '</div></div>'
-    + '<div class="stat"><div class="lbl">Window</div><div class="val" style="font-size:15px">'
+    + windowStat(w);
+}
+
+// In multi-day mode `window` holds only the LAST session's bounds, so showing
+// it raw would be misleading -- show the session span + per-session average
+// instead, and report the window as the repeating clock-time filter.
+function windowStat(w) {
+  var n = (w.dates || []).length;
+  if (n <= 1) {
+    return '<div class="stat"><div class="lbl">Window</div><div class="val" style="font-size:15px">'
       + w.window.start.slice(5,16).replace('T',' ') + ' → '
       + w.window.end.slice(5,16).replace('T',' ') + '</div></div>';
+  }
+  var clock = w.window.start.slice(11,16) + ' → ' + w.window.end.slice(11,16);
+  return '<div class="stat"><div class="lbl">Sessions</div><div class="val">' + n + '</div></div>'
+    + '<div class="stat"><div class="lbl">Avg / session</div><div class="val">'
+      + fmt((w.totals.all || 0) / n) + '</div></div>'
+    + '<div class="stat"><div class="lbl">Window (each session)</div>'
+      + '<div class="val" style="font-size:15px">' + clock + '</div></div>'
+    + '<div class="stat"><div class="lbl">Range</div><div class="val" style="font-size:15px">'
+      + w.dates[0] + ' → ' + w.dates[n-1] + '</div></div>';
 }
 
 function renderTables(w) {
   var t = w.totals, total = t.all || 1;
+  // A-vs-B rewrites these headers to A | B | delta -- restore them, otherwise
+  // switching back to any other view leaves stale 4-col comparison headers.
+  el('tbl-contract').querySelector('thead').innerHTML =
+    '<tr><th>Contract</th><th>Generic</th><th>Volume</th><th>Share</th></tr>';
+  el('tbl-type').querySelector('thead').innerHTML =
+    '<tr><th>Type</th><th>Volume</th><th>Share</th></tr>';
   var cb = Object.entries(t.by_contract).sort(function(a,b){ return b[1]-a[1]; });
   el('tbl-contract').querySelector('tbody').innerHTML = cb.map(function(kv) {
     return '<tr><td>'+kv[0]+'</td><td></td><td>'+fmt(kv[1])+'</td><td>'

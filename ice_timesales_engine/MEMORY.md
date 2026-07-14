@@ -122,3 +122,62 @@ forward-only. Seed once, grow forward with ICE (which carries the trade-type
 tags natively). **Rejected:** generic tickers for the seed (roll ambiguity);
 seeding into `ticks` (no seq_num, would pollute the tape tables); R2/parquet
 tiering (5-min grain makes the whole multi-year archive <1GB — unnecessary).
+
+## 2026-07-14 — session log: Supabase automation live + multi-day dashboard + source rule C
+
+**Supersedes the "Deployment state" section above** (NOT-deployed / Lou-executed-only
+are both stale): Supabase is populated, verified, and written to AUTOMATICALLY daily.
+
+**Completed (07-06→07-07):**
+- Supabase bulk copy finished + independently verified exact (all 6 tables;
+  ticks 130,490 / bar5m 195,188 / minute_agg 15,249 + fingerprints). Root cause
+  of the 07-06 block: a STALE DB PASSWORD, not the Supabase platform incident —
+  dashboard password reset fixed auth instantly (see ERRORS.md + memory
+  `supabase-bulk-copy-lesson`).
+- Daily automation: `run_daily_ingest_all.bat` (CT/KC/SB/CC loop, refuses to run
+  without DATABASE_URL so it can't silently fall back to SQLite) + Task Scheduler
+  task "VLM ICE Timesales Engine - Daily Ingest", daily 17:10 ET (after the three
+  ICE capture tasks). DATABASE_URL = persistent User env var via setx (value never
+  entered chat). Verified through the REAL dispatch path: Start-ScheduledTask →
+  LastTaskResult 0, Supabase counts correct, sha256-skip idempotency held on re-run.
+- Backfills: CC blotter backfill done (38 ok / 5 retention-edge fails 04-27→05-01,
+  same pattern as CT/KC/SB); ingest backfills pushed KC/SB/CC into Supabase.
+  Verified 07-14: all four commodities current through 2026-07-13, task green.
+
+**Completed (07-14) — dashboard multi-day + A-vs-B + full history:**
+- `/v1/sessionvol/{cmd}/profile` now accepts `from=&to=` → `per_date`/`windows`
+  keys (single-`date` response shape UNCHANGED — additive only). Same window
+  preset (full/night/day/custom) resolved per session date in every mode.
+- Fixed a latent bug: custom `start`/`end` was silently overridden by the default
+  `'full'` preset ("2am–4am over 20 days" returned full sessions). Now custom wins
+  when no preset is given.
+- Dashboard view modes: Single day · Continuous (stitched, overnight gaps
+  compressed, Bloomberg-style categorical axis) · Overlay (time-of-day lines,
+  newest gold) · **A vs B** (two arbitrary sessions, two independent single-date
+  fetches, delta bars B−A + A|B|Δ tables; per-bucket deltas verified to sum
+  exactly to the window-endpoint B−A) · Daily totals. renderTables restores
+  the table headers A-vs-B rewrites.
+- **Source rule C (Lou): one source per era, never mixed.** `bloomberg_cutoff()`
+  in repository.py: dates ≤ max bloomberg session_date (CT: 2026-07-02) served
+  from bar5m source='bloomberg'; later dates from live ICE tables. Why: 5 CT dates
+  carry both sources; ICE's 2026-05-01 is ~53% partial (41,337 vs seed 88,045).
+  Rejected: magnitude heuristic (breaks quietly), always-ice (serves the broken
+  day), UI source picker (pushes the problem to the user). Seed grain 5-min →
+  1-min requests flagged `bucket_minutes_effective: 5`. KC/SB/CC: cutoff=None,
+  pure ice, untouched.
+- Verified: catalog CT=139 dates (2025-12-22→2026-07-13); 05-01 full window
+  88,001 (= night 26,256 + day 61,745; 44 lots are window_preset='other'
+  post-close); seam range 06-30→07-08 per-date sum == totals.all exactly
+  (280,548, one source per date); ice-era regression byte-exact (07-13 day
+  44,951); 71/71 tests pass.
+
+**Deployment state (current):** dashboard+API run locally via
+Start_Session_Volume.bat (:5062) against Supabase. The vlmapi gateway's
+/v1/sessionvolume/* routes read Supabase DIRECTLY (bar5m requires explicit
+source= there — rule C lives only in this engine's query layer). railway.toml
+is ready but NO Railway service exists yet for the Flask app — open decision.
+
+**Next:** (1) Railway deploy decision for the Flask API/dashboard; (2) rotate the
+Supabase DB password (several were pasted into chat 07-06/07 — current one was
+set via setx without entering chat, but rotation still prudent); (3) consider
+batching per-date profile queries if long ranges feel slow over Supabase.
