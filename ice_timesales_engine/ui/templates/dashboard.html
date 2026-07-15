@@ -34,9 +34,15 @@
               padding:9px 22px; font-size:13px; font-weight:700; text-transform:uppercase;
               letter-spacing:1px; cursor:pointer; }
   button.go:hover { background:#b38a20; }
+  button.png { background:#1a1a2e; color:#c9a227; border:1px solid #c9a227; border-radius:4px;
+               padding:5px 14px; font-size:11px; font-weight:700; text-transform:uppercase;
+               letter-spacing:1px; cursor:pointer; display:inline-flex; align-items:center; gap:6px; }
+  button.png:hover { background:#2a2a45; }
+  button.png:disabled { opacity:0.4; cursor:default; }
   .banner { background:#c9a227; border-left:6px solid #1a1a2e; padding:8px 18px;
             font-size:13px; font-weight:700; color:#1a1a2e; letter-spacing:2px;
-            text-transform:uppercase; margin-top:18px; }
+            text-transform:uppercase; margin-top:18px;
+            display:flex; justify-content:space-between; align-items:center; }
   .wrap { padding:0 32px 32px; }
   .stats { display:flex; gap:14px; flex-wrap:wrap; margin-top:14px; }
   .stat { background:#f9f9f9; border:1px solid #e5e7eb; border-radius:6px;
@@ -137,7 +143,10 @@
   <div id="error" class="err" style="display:none"></div>
   <div class="banner">Totals</div>
   <div class="stats" id="stats"></div>
-  <div class="banner">Volume profile</div>
+  <div class="banner">
+    <span>Volume profile</span>
+    <button class="png" id="btn-png" onclick="exportPng()" disabled>&#8681; Download PNG</button>
+  </div>
   <div id="chart"></div>
   <div class="banner">By contract</div>
   <table id="tbl-contract"><thead>
@@ -267,6 +276,16 @@ function showErr(msg) {
   el('error').style.display = '';
 }
 
+// Remembers exactly what's on screen right now, so the PNG export prints
+// whichever view is active -- single day, continuous, overlay, A-vs-B, or
+// totals -- with no re-fetch and no guessing which mode the user is on.
+var _LAST = null;
+
+function armPngButton(snapshot) {
+  _LAST = snapshot;
+  el('btn-png').disabled = false;
+}
+
 function runQuery() {
   el('error').style.display = 'none';
   if (isAB()) { return runQueryAB(); }
@@ -299,6 +318,10 @@ function runQuery() {
     else if (view === 'continuous') renderContinuous(p);
     else if (view === 'overlay')    renderOverlay(p);
     else if (view === 'totals')     renderTotals(w);
+    armPngButton({
+      view: view, cmd: cmd, w: w, p: p,
+      dateLabel: isRange() ? el('dfrom').value+'_to_'+el('dto').value : el('date').value
+    });
   }).catch(function(e) {
     showErr('Query failed: ' + e);
   });
@@ -332,6 +355,10 @@ function runQueryAB() {
     renderABStats(A, B, wA, wB);
     renderABTables(A, B, wA, wB);
     renderAB(A, B, pA, pB);
+    armPngButton({
+      view: 'ab', cmd: cmd, A: A, B: B, pA: pA, pB: pB, wA: wA, wB: wB,
+      dateLabel: A+'_vs_'+B
+    });
   }).catch(function(e) {
     showErr('Query failed: ' + e);
   });
@@ -586,6 +613,284 @@ function renderChart(p) {
     plot_bgcolor: '#ffffff', paper_bgcolor: '#ffffff',
     font: { family: 'Arial, sans-serif', color: '#222222' }
   }, { displayModeBar: false, responsive: true });
+}
+
+// ── PNG export -- hand-drawn Canvas2D, VLM master palette (matches the
+// options-sandbox export pattern: header bar, gold accent rule, KPI tiles,
+// data table(s), chart re-plotted as canvas paths, footer bar). Prints
+// EXACTLY the view currently on screen (_LAST), no re-fetch. ────────────────
+var PNG = {
+  navy:'#1a1a2e', gold:'#c9a227', white:'#ffffff', alt:'#f9f9f9',
+  border:'#e5e7eb', dark:'#222222', lgray:'#888888', muted:'#aaaaaa',
+  green:'#15803d', red:'#c0392b'
+};
+
+function _pngSeries() {
+  // Normalize every view into one shape: { kind:'bars'|'lines', xLabels:[],
+  // series:[{name,color,values[],width}] } so ONE chart-drawer serves all
+  // five view modes.
+  var L = _LAST;
+  if (L.view === 'single') {
+    var rows = L.p.profile || [];
+    return { kind:'bars',
+      xLabels: rows.map(function(r){ return r.bucket_ts.slice(11,16); }),
+      series: [{ name:'Volume', color:PNG.gold, values: rows.map(function(r){ return r.sum_size; }) }] };
+  }
+  if (L.view === 'continuous') {
+    var dates = Object.keys(L.p.per_date || {}).sort(), labels = [], vals = [];
+    dates.forEach(function(d) {
+      (L.p.per_date[d] || []).forEach(function(r) {
+        labels.push(d.slice(5) + ' ' + r.bucket_ts.slice(11,16)); vals.push(r.sum_size);
+      });
+    });
+    return { kind:'bars', xLabels: labels,
+      series: [{ name:'Volume', color:PNG.gold, values: vals }] };
+  }
+  if (L.view === 'totals') {
+    var pd = L.w.per_date || {}, dts = Object.keys(pd).sort();
+    return { kind:'bars', xLabels: dts,
+      series: [{ name:'Volume', color:PNG.gold, values: dts.map(function(d){ return pd[d].all; }) }] };
+  }
+  if (L.view === 'overlay') {
+    var dates2 = Object.keys(L.p.per_date || {}).sort();
+    var xLabels2 = (L.p.per_date[dates2[dates2.length-1]] || [])
+                     .map(function(r){ return r.bucket_ts.slice(11,16); });
+    return { kind:'lines', xLabels: xLabels2,
+      series: dates2.map(function(d, i) {
+        var newest = i === dates2.length - 1;
+        return { name:d, color: newest ? PNG.gold : '#9aa3b2', width: newest ? 3 : 1.5,
+                 values: (L.p.per_date[d] || []).map(function(r){ return r.sum_size; }) };
+      }) };
+  }
+  if (L.view === 'ab') {
+    var mapA = {}, mapB = {};
+    (L.pA.profile||[]).forEach(function(r){ mapA[r.bucket_ts.slice(11,16)] = r.sum_size; });
+    (L.pB.profile||[]).forEach(function(r){ mapB[r.bucket_ts.slice(11,16)] = r.sum_size; });
+    var times = Object.keys(mapA).concat(Object.keys(mapB))
+                  .filter(function(v,i,a){ return a.indexOf(v)===i; }).sort();
+    return { kind:'lines', xLabels: times, series: [
+      { name:'A '+L.A, color:'#6b7280', width:2, values: times.map(function(t){ return mapA[t]||0; }) },
+      { name:'B '+L.B, color:PNG.gold,  width:3, values: times.map(function(t){ return mapB[t]||0; }) }
+    ] };
+  }
+}
+
+function _pngStats() {
+  // Same numbers as the on-screen stat tiles -- {label, value, color}[].
+  var L = _LAST;
+  if (L.view === 'ab') {
+    var tA = L.wA.totals.all||0, tB = L.wB.totals.all||0, d = tB-tA;
+    var col = d>=0 ? PNG.green : PNG.red, sign = d>=0 ? '+' : '';
+    return [
+      {label:'A · '+L.A, value: fmt(tA)}, {label:'B · '+L.B, value: fmt(tB)},
+      {label:'B − A', value: sign+fmt(d), color:col},
+      {label:'B vs A', value: sign+(tA?(100*d/tA):0).toFixed(1)+'%', color:col}
+    ];
+  }
+  var t = L.w.totals;
+  var tiles = [
+    {label:'Total (selected)', value: fmt(t.all)},
+    {label:'Outright', value: fmt(t.by_type.outright)},
+    {label:'Leg', value: fmt(t.by_type.leg)},
+    {label:'EFS + EFP', value: fmt((t.by_type.efs||0)+(t.by_type.efp||0))}
+  ];
+  var n = (L.w.dates||[]).length;
+  if (n > 1) { tiles.push({label:'Sessions', value: String(n)}); }
+  return tiles;
+}
+
+function _pngTables() {
+  // Reuse whatever's already rendered in the live tables -- same numbers,
+  // no re-derivation -- read straight from the DOM.
+  function read(tbl) {
+    var head = Array.from(tbl.querySelectorAll('thead th')).map(function(th){ return th.textContent; });
+    var rows = Array.from(tbl.querySelectorAll('tbody tr')).map(function(tr) {
+      return Array.from(tr.children).map(function(td){ return td.textContent; });
+    });
+    return { head: head, rows: rows };
+  }
+  return { contract: read(el('tbl-contract')), type: read(el('tbl-type')) };
+}
+
+function exportPng() {
+  if (!_LAST) { return; }
+  var L = _LAST;
+  var S = 2;                    // retina scale, matches the reference pattern
+  var W = 1180, PAD = 24;
+  var chartData = _pngSeries();
+  var stats = _pngStats();
+  var tables = _pngTables();
+
+  var HDR_H = 78, ACCENT = 4, KPI_H = 76, CHART_H = 360, FOOT_H = 34;
+  var ROW_H = 26, THEAD_H = 28, SEC_H = 30, SEC_GAP = 14;
+  function tblH(t) { return SEC_H + THEAD_H + t.rows.length*ROW_H + SEC_GAP; }
+  var H = HDR_H + ACCENT + 12 + KPI_H + 16 + CHART_H + 16
+        + tblH(tables.contract) + tblH(tables.type) + FOOT_H;
+
+  var cv = document.createElement('canvas');
+  cv.width = W*S; cv.height = H*S;
+  var cx = cv.getContext('2d');
+  cx.scale(S, S);
+  cx.fillStyle = PNG.white; cx.fillRect(0, 0, W, H);
+
+  var now = new Date();
+  var timeStr = now.toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit', hour12:false, timeZone:'America/New_York'});
+  var viewLabel = {single:'Single Day', continuous:'Continuous', overlay:'Overlay (Compare Days)',
+                   ab:'Compare Two Days (A vs B)', totals:'Daily Totals'}[L.view] || L.view;
+  var name = (CATALOG && (CATALOG.commodities||[]).find(function(c){return c.code===L.cmd;}) || {}).name || L.cmd;
+
+  // Header
+  cx.fillStyle = PNG.navy; cx.fillRect(0, 0, W, HDR_H);
+  cx.fillStyle = PNG.gold; cx.fillRect(0, HDR_H, W, ACCENT);
+  cx.textBaseline = 'alphabetic'; cx.textAlign = 'left';
+  cx.fillStyle = PNG.white; cx.font = 'bold 26px Arial';
+  cx.fillText('VLM Commodities — Cotton Desk', PAD, 34);
+  cx.fillStyle = PNG.gold; cx.font = 'bold 14px Arial';
+  cx.fillText('ICE TIME & SALES — SESSION VOLUME', PAD, 54);
+  cx.fillStyle = PNG.muted; cx.font = '12px Arial';
+  cx.fillText(L.cmd + ' — ' + name + '  ·  ' + viewLabel, PAD, 70);
+  cx.textAlign = 'right';
+  cx.fillStyle = PNG.white; cx.font = 'bold 16px Arial';
+  cx.fillText(L.dateLabel, W-PAD, 34);
+  cx.fillStyle = PNG.muted; cx.font = '11px Arial';
+  cx.fillText('As of ' + timeStr + ' ET', W-PAD, 54);
+  cx.fillText('ICE Futures U.S. tick tape · EOD capture', W-PAD, 70);
+
+  var y = HDR_H + ACCENT + 12;
+
+  // KPI tiles
+  var gap = 10, tileW = Math.floor((W - PAD*2 - gap*(stats.length-1)) / stats.length);
+  stats.forEach(function(s, i) {
+    var tx = PAD + i*(tileW+gap);
+    cx.fillStyle = PNG.alt; cx.fillRect(tx, y, tileW, KPI_H);
+    cx.strokeStyle = PNG.border; cx.lineWidth = 1; cx.strokeRect(tx+0.5, y+0.5, tileW-1, KPI_H-1);
+    cx.textAlign = 'left'; cx.textBaseline = 'alphabetic';
+    cx.fillStyle = PNG.lgray; cx.font = 'bold 10px Arial';
+    cx.fillText(s.label.toUpperCase(), tx+12, y+22);
+    cx.fillStyle = s.color || PNG.navy; var fs = 22; cx.font = 'bold '+fs+'px Arial';
+    while (cx.measureText(s.value).width > tileW-24 && fs > 12) { fs--; cx.font = 'bold '+fs+'px Arial'; }
+    cx.fillText(s.value, tx+12, y+KPI_H-16);
+  });
+  y += KPI_H + 16;
+
+  // Chart -- bars or lines, hand-drawn to canvas coordinates
+  _pngDrawChart(cx, chartData, PAD, y, W-PAD*2, CHART_H);
+  y += CHART_H + 16;
+
+  // Tables
+  y = _pngDrawTable(cx, 'BY CONTRACT', tables.contract, PAD, y, W-PAD*2, ROW_H, THEAD_H, SEC_H) + SEC_GAP;
+  y = _pngDrawTable(cx, 'BY TRADE TYPE', tables.type, PAD, y, W-PAD*2, ROW_H, THEAD_H, SEC_H) + SEC_GAP;
+
+  // Footer
+  cx.fillStyle = PNG.alt; cx.fillRect(0, y, W, FOOT_H);
+  cx.strokeStyle = PNG.border; cx.beginPath(); cx.moveTo(0, y+0.5); cx.lineTo(W, y+0.5); cx.stroke();
+  cx.textBaseline = 'middle';
+  cx.fillStyle = PNG.lgray; cx.font = 'bold 10px Arial'; cx.textAlign = 'left';
+  cx.fillText('VLM COMMODITIES LTD  ·  COTTON DESK', PAD, y+FOOT_H/2);
+  cx.fillStyle = PNG.muted; cx.font = '10px Arial'; cx.textAlign = 'right';
+  cx.fillText('vlmdata.com · ICE session-volume engine · for discussion purposes only', W-PAD, y+FOOT_H/2);
+
+  var link = document.createElement('a');
+  link.download = 'vlm_' + L.cmd + '_' + L.view + '_' + L.dateLabel + '.png';
+  link.href = cv.toDataURL('image/png');
+  link.click();
+}
+
+function _pngDrawChart(cx, data, x0, y0, w, h) {
+  cx.fillStyle = PNG.white; cx.fillRect(x0, y0, w, h);
+  cx.strokeStyle = PNG.border; cx.strokeRect(x0+0.5, y0+0.5, w-1, h-1);
+  var padL = 56, padB = 46, padT = 10, padR = 10;
+  var plotX = x0+padL, plotY = y0+padT, plotW = w-padL-padR, plotH = h-padT-padB;
+
+  var allVals = [];
+  data.series.forEach(function(s){ allVals = allVals.concat(s.values); });
+  var maxV = Math.max.apply(null, allVals.concat([1]));
+  var niceMax = maxV <= 0 ? 1 : Math.pow(10, Math.ceil(Math.log10(maxV)));
+  if (niceMax / 2 >= maxV) niceMax /= 2;
+
+  // Gridlines + y-axis labels (4 bands)
+  cx.strokeStyle = PNG.border; cx.fillStyle = PNG.lgray; cx.font = '10px Arial';
+  cx.textAlign = 'right'; cx.textBaseline = 'middle';
+  for (var g = 0; g <= 4; g++) {
+    var gy = plotY + plotH - (plotH * g/4);
+    cx.beginPath(); cx.moveTo(plotX, gy); cx.lineTo(plotX+plotW, gy); cx.stroke();
+    cx.fillText(fmt(niceMax * g/4), plotX-8, gy);
+  }
+
+  var n = data.xLabels.length || 1;
+  if (data.kind === 'bars') {
+    var s = data.series[0];
+    var bw = Math.max(1, plotW/n * 0.7);
+    s.values.forEach(function(v, i) {
+      var bx = plotX + (i+0.5)*(plotW/n) - bw/2;
+      var bh = plotH * (v/niceMax);
+      cx.fillStyle = s.color;
+      cx.fillRect(bx, plotY+plotH-bh, bw, bh);
+    });
+  } else {
+    data.series.forEach(function(s) {
+      cx.strokeStyle = s.color; cx.lineWidth = s.width || 2; cx.beginPath();
+      s.values.forEach(function(v, i) {
+        var px = plotX + (n>1 ? i*(plotW/(n-1)) : plotW/2);
+        var py = plotY + plotH - plotH*(v/niceMax);
+        if (i === 0) cx.moveTo(px, py); else cx.lineTo(px, py);
+      });
+      cx.stroke();
+    });
+    // Legend (top-left of the plot area)
+    cx.font = 'bold 10px Arial'; cx.textAlign = 'left'; cx.textBaseline = 'middle';
+    var lx = plotX + 6, ly = y0 + 4;
+    data.series.forEach(function(s) {
+      cx.fillStyle = s.color; cx.fillRect(lx, ly-4, 14, 3);
+      cx.fillStyle = PNG.dark; cx.fillText(s.name, lx+18, ly);
+      lx += 18 + cx.measureText(s.name).width + 16;
+    });
+  }
+
+  // X-axis labels: thin out so they don't overlap
+  cx.fillStyle = PNG.lgray; cx.font = '9px Arial'; cx.textAlign = 'center'; cx.textBaseline = 'top';
+  var maxTicks = Math.floor(plotW / 60);
+  var step = Math.max(1, Math.ceil(n / Math.max(1,maxTicks)));
+  for (var i = 0; i < n; i += step) {
+    var tx = plotX + (data.kind==='bars' ? (i+0.5)*(plotW/n) : (n>1 ? i*(plotW/(n-1)) : plotW/2));
+    cx.save(); cx.translate(tx, plotY+plotH+6); cx.rotate(-Math.PI/4);
+    cx.textAlign = 'right'; cx.fillText(data.xLabels[i], 0, 0);
+    cx.restore();
+  }
+}
+
+function _pngDrawTable(cx, title, t, x0, y0, w, rowH, theadH, secH) {
+  cx.fillStyle = PNG.gold; cx.fillRect(x0, y0, w, secH);
+  cx.fillStyle = PNG.navy; cx.font = 'bold 12px Arial';
+  cx.textAlign = 'left'; cx.textBaseline = 'middle';
+  cx.fillText(title, x0+12, y0+secH/2);
+  var y = y0 + secH;
+
+  var nCol = t.head.length || 1;
+  var colW = w / nCol;
+  cx.fillStyle = PNG.alt; cx.fillRect(x0, y, w, theadH);
+  cx.fillStyle = PNG.lgray; cx.font = 'bold 10px Arial';
+  t.head.forEach(function(h, i) {
+    cx.textAlign = i === 0 ? 'left' : 'right';
+    var tx = i === 0 ? x0+12 : x0 + (i+1)*colW - 12;
+    cx.fillText(h.toUpperCase(), tx, y+theadH/2);
+  });
+  y += theadH;
+
+  t.rows.forEach(function(row, ri) {
+    cx.fillStyle = ri % 2 === 0 ? PNG.white : PNG.alt;
+    cx.fillRect(x0, y, w, rowH);
+    cx.strokeStyle = PNG.border; cx.beginPath();
+    cx.moveTo(x0, y+rowH-0.5); cx.lineTo(x0+w, y+rowH-0.5); cx.stroke();
+    row.forEach(function(cell, ci) {
+      cx.fillStyle = PNG.navy; cx.font = 'bold 11px Arial';
+      cx.textAlign = ci === 0 ? 'left' : 'right';
+      var tx = ci === 0 ? x0+12 : x0 + (ci+1)*colW - 12;
+      cx.fillText(cell, tx, y+rowH/2);
+    });
+    y += rowH;
+  });
+  return y;
 }
 
 loadCatalog();
