@@ -181,3 +181,45 @@ is ready but NO Railway service exists yet for the Flask app — open decision.
 Supabase DB password (several were pasted into chat 07-06/07 — current one was
 set via setx without entering chat, but rotation still prudent); (3) consider
 batching per-date profile queries if long ranges feel slow over Supabase.
+
+## 2026-07-15 — client-facing branded PNG export
+
+**Built:** "Download PNG" button on the dashboard, VLM navy/gold branding,
+hand-drawn HTML5 Canvas2D (header bar + gold accent, KPI stat tiles, chart
+re-plotted as canvas bars/lines, By Contract + By Trade Type tables, footer
+bar), 2x scale for retina quality.
+
+**Why this pattern, not Plotly's built-in export or html2canvas:** Lou's
+actual reference ("options sandbox") turned out to be neither -- it's
+`options sandbox/dashboard/templates/index.html`'s hand-coded canvas export
+functions (exportStraddlePanel/exportTradePanel/exportSurfacePanel,
+`_finishExport`), pure ctx.fillRect/fillText/lineTo calls, no library, at
+SCALE=2. Matched that exact convention here rather than inventing a new one,
+so VLM's client-facing PNGs stay visually consistent across dashboards.
+Rejected: Plotly's displayModeBar camera icon (chart-only, no branding);
+html2canvas of a hidden export div (untested fidelity vs the proven
+canvas-drawing pattern); server-side Playwright render like
+`options sandbox/dashboard/eod_png.py` (that module turned out to be a
+DIFFERENT export path in that project, not what the reference screenshot
+actually came from -- the real source was the canvas-drawing JS).
+
+**Design call (Lou, verbatim):** "what ever the selectors are on the screen
+is what it uses... no need for all of them every time...if i am comparing
+one day...it prints one day...continuous selected...that is what prints...
+simple." Implemented via a `_LAST` snapshot object captured at the same
+point each view's render call fires (armPngButton), so the exporter reads
+whichever view/data is currently on screen with no re-fetch and no mode
+guessing. One `_pngSeries()` normalizer maps all 5 view shapes (single/
+continuous/totals -> bars; overlay/ab -> lines) into one common shape so a
+single `_pngDrawChart` serves every mode.
+
+**Verification note:** this environment has no browser automation (no
+Playwright/Selenium/node available in this session) and no JS runtime to
+dry-run the canvas logic outside a real browser -- server-side checks
+(function presence, balanced braces/parens, HTTP 200) were exhausted, then
+Lou tested live in-browser and confirmed working ("perfect") before this was
+committed. Keep doing this: for canvas/DOM-dependent features, be explicit
+about what couldn't be verified server-side and have Lou confirm in-browser
+before calling it done.
+
+Committed + pushed: 807ecc1.
