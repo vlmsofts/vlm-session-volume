@@ -1,5 +1,6 @@
 flask>=3.0
 pytest>=8.0
+python-dotenv>=1.0
 # Production (Supabase Postgres + Railway) only -- local dev/tests run on
 # stdlib sqlite3 and need neither:
 psycopg[binary]>=3.1

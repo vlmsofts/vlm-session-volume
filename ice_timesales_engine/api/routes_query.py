@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, current_app, jsonify, request
 
 import commodity_meta
+from api import price as price_mod
 from api import windows as win
 from api.cache import cache_headers
 from store import repository as repo
@@ -194,6 +195,40 @@ def reconcile(cmd):
     return _respond({'commodity': cmd, 'date': d,
                      'reconcile': repo.reconcile_rows(_db(), cmd, d),
                      'freshness': _freshness(cmd, [d])}, [d], cmd)
+
+
+@bp.get('/<cmd>/price')
+def price(cmd):
+    """Futures settlement price + OHLC (front month, or a specific ice_code)
+    for one date or a date range -- read from the ICE eod capture root
+    (futures_settle_<date>.csv, config.ICE_ROOT), the SAME read-only source
+    this engine's blotter ingest already uses for volume. A date with no
+    settle file (weekend, holiday, today's session not yet closed) returns
+    a real None, not an error -- that's an honest absence. A genuinely
+    unreadable file on a SINGLE date (date=) is a real 502 for that request;
+    in a RANGE (from=/to=), one bad date's read error is caught per-date
+    (errored_dates) rather than blanking out every other date's real,
+    successfully-read settle in the same response."""
+    cmd = cmd.upper()
+    dates = _dates_param(cmd)
+    if not dates:
+        return jsonify({'error': 'date=YYYY-MM-DD or from=&to= required'}), 400
+    ice_code = (request.args.get('contract') or '').strip().upper() or None
+    try:
+        if len(dates) == 1:
+            row = price_mod.settle_for(cmd, dates[0], ice_code=ice_code)
+            payload = {'commodity': cmd, 'date': dates[0], 'settle': row}
+        else:
+            series, errored_dates = price_mod.settle_series(cmd, dates, ice_code=ice_code)
+            avg_vals = [v['settle'] for v in series.values() if v is not None]
+            payload = {
+                'commodity': cmd, 'dates': dates, 'series': series,
+                'avg_settle': (sum(avg_vals) / len(avg_vals)) if avg_vals else None,
+                'errored_dates': errored_dates,
+            }
+        return jsonify(payload)
+    except price_mod.PriceUnavailable as exc:
+        return jsonify({'error': f'price unavailable: {exc}'}), 502
 
 
 @bp.get('/catalog')

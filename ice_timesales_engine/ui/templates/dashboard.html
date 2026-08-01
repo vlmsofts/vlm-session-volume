@@ -148,6 +148,10 @@
     <button class="png" id="btn-png" onclick="exportPng()" disabled>&#8681; Download PNG</button>
   </div>
   <div id="chart"></div>
+  <div class="banner" id="banner-daily" style="display:none">Daily volume</div>
+  <table id="tbl-daily" style="display:none"><thead>
+    <tr><th>Date</th><th>Volume</th><th>Contract</th><th>Open</th><th>High</th><th>Low</th><th>Settle</th></tr>
+  </thead><tbody></tbody></table>
   <div class="banner">By contract</div>
   <table id="tbl-contract"><thead>
     <tr><th>Contract</th><th>Generic</th><th>Volume</th><th>Share</th></tr>
@@ -209,6 +213,11 @@ function onViewChange() {
   el('ctl-date').style.display  = (el('view').value === 'single') ? '' : 'none';
   el('ctl-range').style.display = isRange() ? '' : 'none';
   el('ctl-ab').style.display    = isAB() ? '' : 'none';
+  // Daily volume/price table is Totals-only -- hide it (with stale rows)
+  // the moment another view is picked, rather than leaving it visible.
+  var isTotals = (el('view').value === 'totals');
+  el('banner-daily').style.display = isTotals ? '' : 'none';
+  el('tbl-daily').style.display    = isTotals ? '' : 'none';
   // Bucket is meaningless for daily totals (one point per session).
   el('bucket').disabled = (el('view').value === 'totals');
   loadContracts();   // seed date differs per mode
@@ -308,18 +317,57 @@ function runQuery() {
   var pq = fetch('/v1/sessionvol/'+cmd+'/profile?'+windowParams()+base
                  +'&bucket='+el('bucket').value)
              .then(function(r){ return r.json(); });
+  // Price overlay is ONLY meaningful for Daily Totals (one point per session).
+  // Fetched from the ICE eod capture root (futures_settle_<date>.csv, the
+  // same read-only source this engine's blotter ingest already uses) --
+  // a failure here must be VISIBLE (priceErr), never a silently blank line.
+  // Contract scope MUST match what the volume chart is actually showing:
+  // exactly one contract picked -> that contract's price; 0 or several
+  // (incl. 'all') -> there's no single coherent price for a multi-contract
+  // volume sum, so front month is the only sensible fallback.
+  var pickedContracts = Array.from(el('contracts').selectedOptions).map(function(o){ return o.value; });
+  var priceContractParam = pickedContracts.length === 1 ? '&contract=' + pickedContracts[0] : '';
+  var priceq = (view === 'totals')
+    ? fetch('/v1/sessionvol/'+cmd+'/price?'+dq.slice(1)+priceContractParam)
+        .then(function(r){ return r.json().then(function(j){ return {ok: r.ok, body: j}; }); })
+        .catch(function(e){ return {ok: false, body: {error: String(e)}}; })
+    : Promise.resolve(null);
 
-  Promise.all([wq, pq]).then(function(res) {
-    var w = res[0], p = res[1];
+  Promise.all([wq, pq, priceq]).then(function(res) {
+    var w = res[0], p = res[1], priceRes = res[2];
     if (w.error) { showErr(w.error); return; }
     if (p.error) { showErr(p.error); return; }
     renderStats(w); renderTables(w);
+    var priceInfo = null;
+    if (priceRes) {
+      if (!priceRes.ok || priceRes.body.error) {
+        showErr('Price unavailable: ' + (priceRes.body.error || 'read error')
+          + ' (volume data above is unaffected)');
+      } else {
+        priceInfo = priceRes.body;
+        // Label reflects what price ACTUALLY tracked (see priceContractParam
+        // above) -- the selected contract when exactly one is picked, else
+        // the front-month fallback. Read by the chart legend, stats tile,
+        // and PNG export so none of them can drift out of sync with what
+        // was actually fetched.
+        priceInfo.price_label = (pickedContracts.length === 1)
+          ? 'Settle (' + pickedContracts[0] + ')' : 'Settle (front month)';
+        // Partial failure: some dates in the range hit a genuine read error
+        // (as opposed to an honest "no settle file yet") -- surface that
+        // distinction rather than letting it look identical to a normal gap.
+        var errd = priceInfo.errored_dates || [];
+        if (errd.length) {
+          showErr('Price could not be read for ' + errd.length + ' date(s) in this range ('
+            + errd.join(', ') + ') -- shown as gaps, not zero. Other dates are unaffected.');
+        }
+      }
+    }
     if (view === 'single')          renderChart(p);
     else if (view === 'continuous') renderContinuous(p);
     else if (view === 'overlay')    renderOverlay(p);
-    else if (view === 'totals')     renderTotals(w);
+    else if (view === 'totals')     renderTotals(w, priceInfo);
     armPngButton({
-      view: view, cmd: cmd, w: w, p: p,
+      view: view, cmd: cmd, w: w, p: p, priceInfo: priceInfo,
       dateLabel: isRange() ? el('dfrom').value+'_to_'+el('dto').value : el('date').value
     });
   }).catch(function(e) {
@@ -527,23 +575,75 @@ function renderOverlay(p) {
 }
 
 // DAILY TOTALS: one bar per session date -- in-window total volume, from the
-// /window endpoint's per_date breakdown.
-function renderTotals(w) {
+// /window endpoint's per_date breakdown. priceInfo (optional, from
+// /<cmd>/price) overlays front-month settle as a line on a secondary axis --
+// null when the price fetch failed (the failure itself was already shown
+// via showErr in runQuery; this function just omits the line, it never
+// fabricates one).
+function renderTotals(w, priceInfo) {
   var pd = w.per_date || {};
   var dates = Object.keys(pd).sort();
-  Plotly.newPlot('chart', [{
+  var series = (priceInfo && priceInfo.series) || null;
+
+  var traces = [{
     x: dates,
     y: dates.map(function(d){ return pd[d].all; }),
-    type: 'bar', marker: { color: '#c9a227' },
+    type: 'bar', name: 'Volume', marker: { color: '#c9a227' },
     hovertemplate: '%{x}<br>%{y:,.0f} lots<extra></extra>'
-  }], {
-    margin: { t: 10, r: 20, b: 70, l: 60 },
+  }];
+  var layout = {
+    margin: { t: 10, r: series ? 60 : 20, b: 70, l: 60 },
     xaxis: { type: 'category', tickangle: -45,
              tickfont: { size: 10, family: 'Arial' } },
     yaxis: { title: 'Volume (lots)', gridcolor: '#e5e7eb' },
     plot_bgcolor: '#ffffff', paper_bgcolor: '#ffffff',
     font: { family: 'Arial, sans-serif', color: '#222222' }
-  }, { displayModeBar: false, responsive: true });
+  };
+  if (series) {
+    traces.push({
+      x: dates, y: dates.map(function(d){ return series[d] ? series[d].settle : null; }),
+      type: 'scatter', mode: 'lines+markers', name: priceInfo.price_label,
+      yaxis: 'y2', line: { color: '#1a1a2e', width: 2 },
+      marker: { size: 5 },
+      connectgaps: false,   // a missing settle stays a real gap, never interpolated
+      text: dates.map(function(d){ return series[d] ? series[d].generic_code : ''; }),
+      hovertemplate: '%{x}  %{text}<br>%{y:.2f}¢<extra></extra>'
+    });
+    layout.yaxis2 = { title: 'Settle', overlaying: 'y', side: 'right',
+                       showgrid: false };
+    layout.legend = { orientation: 'h', y: 1.12, font: { size: 11 } };
+  }
+  Plotly.newPlot('chart', traces, layout, { displayModeBar: false, responsive: true });
+
+  renderDailyTable(dates, pd, series);
+
+  // Avg settle tile -- appended after renderStats() (called earlier in
+  // runQuery, shared by every view) rather than folded into it, so only
+  // Daily Totals gets this tile and every other view is untouched.
+  if (priceInfo && priceInfo.avg_settle != null) {
+    el('stats').innerHTML += '<div class="stat"><div class="lbl">Avg ' + priceInfo.price_label + '</div>'
+      + '<div class="val">' + priceInfo.avg_settle.toFixed(2) + '</div></div>';
+  }
+}
+
+// The date/volume/price table item 1 asked for -- ALWAYS shown for Daily
+// Totals (volume columns never depend on price); front-month/OHLC/settle
+// columns are blank (never fabricated) when priceInfo/series is unavailable
+// for that date (e.g. a weekend, or today's session not yet closed).
+function renderDailyTable(dates, pd, series) {
+  el('banner-daily').style.display = '';
+  var tbl = el('tbl-daily');
+  tbl.style.display = '';
+  function px(v) { return v != null ? v.toFixed(2) : '—'; }
+  tbl.querySelector('tbody').innerHTML = dates.map(function(d) {
+    var row = series ? series[d] : null;
+    return '<tr><td>' + d + '</td><td>' + fmt(pd[d].all) + '</td>'
+      + '<td>' + (row ? row.generic_code : '—') + '</td>'
+      + '<td>' + (row ? px(row.open) : '—') + '</td>'
+      + '<td>' + (row ? px(row.high) : '—') + '</td>'
+      + '<td>' + (row ? px(row.low) : '—') + '</td>'
+      + '<td>' + (row ? px(row.settle) : '—') + '</td></tr>';
+  }).join('');
 }
 
 function renderStats(w) {
@@ -648,8 +748,17 @@ function _pngSeries() {
   }
   if (L.view === 'totals') {
     var pd = L.w.per_date || {}, dts = Object.keys(pd).sort();
-    return { kind:'bars', xLabels: dts,
+    var out = { kind:'bars', xLabels: dts,
       series: [{ name:'Volume', color:PNG.gold, values: dts.map(function(d){ return pd[d].all; }) }] };
+    // Price overlay -- own scale (secondary), NEVER folded into the volume
+    // bars' max/min. A missing settle stays null (a real gap on the line),
+    // never fabricated or interpolated.
+    if (L.priceInfo && L.priceInfo.series) {
+      var s = L.priceInfo.series;
+      out.secondary = { name: L.priceInfo.price_label || 'Settle (front month)', color: PNG.navy,
+        values: dts.map(function(d){ return s[d] ? s[d].settle : null; }) };
+    }
+    return out;
   }
   if (L.view === 'overlay') {
     var dates2 = Object.keys(L.p.per_date || {}).sort();
@@ -696,6 +805,10 @@ function _pngStats() {
   ];
   var n = (L.w.dates||[]).length;
   if (n > 1) { tiles.push({label:'Sessions', value: String(n)}); }
+  if (L.view === 'totals' && L.priceInfo && L.priceInfo.avg_settle != null) {
+    tiles.push({label: 'Avg ' + (L.priceInfo.price_label || 'Settle (front month)'),
+               value: L.priceInfo.avg_settle.toFixed(2)});
+  }
   return tiles;
 }
 
@@ -709,7 +822,11 @@ function _pngTables() {
     });
     return { head: head, rows: rows };
   }
-  return { contract: read(el('tbl-contract')), type: read(el('tbl-type')) };
+  var out = { contract: read(el('tbl-contract')), type: read(el('tbl-type')) };
+  if (_LAST.view === 'totals' && el('tbl-daily').style.display !== 'none') {
+    out.daily = read(el('tbl-daily'));
+  }
+  return out;
 }
 
 function exportPng() {
@@ -725,6 +842,7 @@ function exportPng() {
   var ROW_H = 26, THEAD_H = 28, SEC_H = 30, SEC_GAP = 14;
   function tblH(t) { return SEC_H + THEAD_H + t.rows.length*ROW_H + SEC_GAP; }
   var H = HDR_H + ACCENT + 12 + KPI_H + 16 + CHART_H + 16
+        + (tables.daily ? tblH(tables.daily) : 0)
         + tblH(tables.contract) + tblH(tables.type) + FOOT_H;
 
   var cv = document.createElement('canvas');
@@ -778,6 +896,9 @@ function exportPng() {
   y += CHART_H + 16;
 
   // Tables
+  if (tables.daily) {
+    y = _pngDrawTable(cx, 'DAILY VOLUME', tables.daily, PAD, y, W-PAD*2, ROW_H, THEAD_H, SEC_H) + SEC_GAP;
+  }
   y = _pngDrawTable(cx, 'BY CONTRACT', tables.contract, PAD, y, W-PAD*2, ROW_H, THEAD_H, SEC_H) + SEC_GAP;
   y = _pngDrawTable(cx, 'BY TRADE TYPE', tables.type, PAD, y, W-PAD*2, ROW_H, THEAD_H, SEC_H) + SEC_GAP;
 
@@ -799,7 +920,7 @@ function exportPng() {
 function _pngDrawChart(cx, data, x0, y0, w, h) {
   cx.fillStyle = PNG.white; cx.fillRect(x0, y0, w, h);
   cx.strokeStyle = PNG.border; cx.strokeRect(x0+0.5, y0+0.5, w-1, h-1);
-  var padL = 56, padB = 46, padT = 10, padR = 10;
+  var padL = 56, padB = 46, padT = 10, padR = data.secondary ? 56 : 10;
   var plotX = x0+padL, plotY = y0+padT, plotW = w-padL-padR, plotH = h-padT-padB;
 
   var allVals = [];
@@ -808,13 +929,28 @@ function _pngDrawChart(cx, data, x0, y0, w, h) {
   var niceMax = maxV <= 0 ? 1 : Math.pow(10, Math.ceil(Math.log10(maxV)));
   if (niceMax / 2 >= maxV) niceMax /= 2;
 
-  // Gridlines + y-axis labels (4 bands)
+  // Secondary (price) axis -- OWN min/max, never folded into the volume
+  // bars' scale. Nulls (missing settle) are excluded from the range calc,
+  // not treated as zero.
+  var secVals = data.secondary ? data.secondary.values.filter(function(v){ return v != null; }) : [];
+  var secMin = secVals.length ? Math.min.apply(null, secVals) : 0;
+  var secMax = secVals.length ? Math.max.apply(null, secVals) : 1;
+  if (secMin === secMax) { secMin -= 1; secMax += 1; }   // avoid a zero-span axis
+  var secPad = (secMax - secMin) * 0.1;
+  secMin -= secPad; secMax += secPad;
+
+  // Gridlines + y-axis labels (4 bands) -- left = volume, right = price (if present)
   cx.strokeStyle = PNG.border; cx.fillStyle = PNG.lgray; cx.font = '10px Arial';
-  cx.textAlign = 'right'; cx.textBaseline = 'middle';
+  cx.textBaseline = 'middle';
   for (var g = 0; g <= 4; g++) {
     var gy = plotY + plotH - (plotH * g/4);
     cx.beginPath(); cx.moveTo(plotX, gy); cx.lineTo(plotX+plotW, gy); cx.stroke();
+    cx.textAlign = 'right';
     cx.fillText(fmt(niceMax * g/4), plotX-8, gy);
+    if (data.secondary) {
+      cx.textAlign = 'left';
+      cx.fillText((secMin + (secMax-secMin)*g/4).toFixed(2), plotX+plotW+8, gy);
+    }
   }
 
   var n = data.xLabels.length || 1;
@@ -827,6 +963,30 @@ function _pngDrawChart(cx, data, x0, y0, w, h) {
       cx.fillStyle = s.color;
       cx.fillRect(bx, plotY+plotH-bh, bw, bh);
     });
+    if (data.secondary) {
+      var sec = data.secondary;
+      cx.strokeStyle = sec.color; cx.lineWidth = 2;
+      cx.beginPath();
+      var started = false;
+      sec.values.forEach(function(v, i) {
+        var px = plotX + (i+0.5)*(plotW/n);
+        if (v == null) { started = false; return; }   // real gap -- never bridged
+        var py = plotY + plotH - plotH*(v-secMin)/(secMax-secMin);
+        if (!started) { cx.moveTo(px, py); started = true; } else { cx.lineTo(px, py); }
+      });
+      cx.stroke();
+      cx.fillStyle = sec.color;
+      sec.values.forEach(function(v, i) {
+        if (v == null) return;
+        var px = plotX + (i+0.5)*(plotW/n);
+        var py = plotY + plotH - plotH*(v-secMin)/(secMax-secMin);
+        cx.beginPath(); cx.arc(px, py, 2.5, 0, Math.PI*2); cx.fill();
+      });
+      // Legend for the price line (bars view has no legend otherwise)
+      cx.font = 'bold 10px Arial'; cx.textAlign = 'left'; cx.textBaseline = 'middle';
+      cx.fillStyle = sec.color; cx.fillRect(plotX+6, y0-8, 14, 3);
+      cx.fillStyle = PNG.dark; cx.fillText(sec.name, plotX+26, y0-6);
+    }
   } else {
     data.series.forEach(function(s) {
       cx.strokeStyle = s.color; cx.lineWidth = s.width || 2; cx.beginPath();

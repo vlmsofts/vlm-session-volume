@@ -15,6 +15,18 @@ import os
 import sys
 
 # ---------------------------------------------------------------------------
+# .env (repo root, VLM_Session_Volume_Project/.env) -- python-dotenv is a
+# soft dependency: if unavailable, real environment variables still work
+# (e.g. production/Railway sets them directly, no .env file involved).
+# ---------------------------------------------------------------------------
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env'))
+except ImportError:
+    pass
+
+# ---------------------------------------------------------------------------
 # REUSED SOURCE OF TRUTH (VLM_Session_Volume_Project) -- import, don't copy
 # ---------------------------------------------------------------------------
 
