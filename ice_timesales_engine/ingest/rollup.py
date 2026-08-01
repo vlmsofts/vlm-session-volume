@@ -23,7 +23,7 @@ import csv
 import os
 
 import config
-from commodity_meta import MONTH_NAME
+from commodity_meta import COMMODITY_MONTHS, MONTH_NAME
 from contract_resolver import ice_to_generic
 from store.db import Db, now_iso
 
@@ -103,7 +103,8 @@ def emit_contract_rows(db: Db, commodity: str, session_date: str) -> list:
     for ice, v in sorted(per.items()):
         month_code = ice[-2]
         try:
-            info = ice_to_generic(ice, session_date, prefix=cmd)
+            info = ice_to_generic(ice, session_date, prefix=cmd,
+                                  active_months=COMMODITY_MONTHS.get(cmd))
         except Exception:
             info = None
         rows.append({

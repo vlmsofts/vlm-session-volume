@@ -53,6 +53,7 @@ _WORD_META = {
     'JUL': (7,  'Jul'), 'AUG': (8,  'Aug'), 'SEP': (9,  'Sep'),
     'OCT': (10, 'Oct'), 'NOV': (11, 'Nov'), 'DEC': (12, 'Dec'),
 }
+_MONTH_NUM_TO_WORD = {n: w for w, (n, _) in _WORD_META.items()}
 
 # Four active CT delivery months, their Bloomberg generic word, and ICE letter
 _CT_ACTIVE = {
@@ -61,6 +62,40 @@ _CT_ACTIVE = {
     7:  ('JUL', 'N', 'Jul'),
     12: ('DEC', 'Z', 'Dec'),
 }
+
+
+def _active_table(month_letters=None) -> dict:
+    """{month_num: (word, letter, name)} for a set of ICE month letters, e.g.
+    {'H','K','N','U','Z'} for KC. None (the default everywhere today) ->
+    _CT_ACTIVE verbatim, so every existing caller is byte-identical."""
+    if month_letters is None:
+        return _CT_ACTIVE
+    out = {}
+    for letter in month_letters:
+        month_num = _LETTER_TO_MONTH.get(letter)
+        if month_num is None:
+            continue   # not a real ICE month letter -- skip, never crash
+        word = _MONTH_NUM_TO_WORD[month_num]
+        _, name = _WORD_META[word]
+        out[month_num] = (word, letter, name)
+    return out
+
+
+def front_generic(prefix: str, as_of_date, active_months=None) -> Optional[ContractInfo]:
+    """The nearest active-month position-1 generic for `prefix` on as_of_date,
+    e.g. front_generic('KC', '2026-07-15', {'H','K','N','U','Z'}) -> the
+    ContractInfo for whichever of KC's active months expires soonest (its
+    'front month'). active_months=None -> CT's H/K/N/Z (unchanged default)."""
+    table = _active_table(active_months)
+    best = None
+    for word, _, _ in table.values():
+        try:
+            info = resolve_generic(f'{prefix.upper()}{word}1', as_of_date)
+        except ValueError:
+            continue
+        if best is None or (info.delivery_year, info.month_num) < (best.delivery_year, best.month_num):
+            best = info
+    return best
 
 # ---------------------------------------------------------------------------
 # DATA CLASS
@@ -200,12 +235,18 @@ def resolve_generic(generic_code: str, as_of_date) -> ContractInfo:
 # ---------------------------------------------------------------------------
 
 def ice_to_generic(ice_code: str, as_of_date,
-                   prefix: str = 'CT') -> Optional[ContractInfo]:
+                   prefix: str = 'CT',
+                   active_months=None) -> Optional[ContractInfo]:
     """Inverse of resolve_generic for the 8-slot capture universe.
 
     Returns None if the contract is not currently in positions 1 or 2 for any
-    active CT month on as_of_date, or if its month is excluded.
-    """
+    active month on as_of_date, or if its month is excluded.
+
+    active_months: optional set of ICE month letters (e.g. {'H','K','N','U','Z'}
+    for KC) defining which delivery months are "active" for this prefix. None
+    (the default, every existing caller) -> CT's four months (H K N Z),
+    unchanged from before this parameter existed. Pass commodity_meta's
+    COMMODITY_MONTHS[cmd] to resolve a non-CT prefix correctly."""
     as_of = _coerce_date(as_of_date)
     try:
         p, month_letter, delivery_year = parse_ice_code(ice_code, as_of)
@@ -219,16 +260,18 @@ def ice_to_generic(ice_code: str, as_of_date,
     if month_num is None:
         return None
 
-    # Check excluded
-    three_char_prefix = f'{p.upper()}{month_letter}'
-    if three_char_prefix in CT_EXCLUDED_PREFIXES:
+    # CT_EXCLUDED_PREFIXES (CTV/CTQ) encodes CT's options-serial exclusions --
+    # only meaningful when resolving CT itself.
+    if prefix.upper() == 'CT':
+        three_char_prefix = f'{p.upper()}{month_letter}'
+        if three_char_prefix in CT_EXCLUDED_PREFIXES:
+            return None
+
+    table = _active_table(active_months)
+    if month_num not in table:
         return None
 
-    # Must be an active CT month
-    if month_num not in _CT_ACTIVE:
-        return None
-
-    word, _, month_name = _CT_ACTIVE[month_num]
+    word, _, month_name = table[month_num]
 
     # Which position is this? Resolve positions 1 and 2 and see if either matches.
     generic_base = f'{prefix.upper()}{word}'

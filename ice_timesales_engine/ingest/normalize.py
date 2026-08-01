@@ -58,11 +58,17 @@ def assign_window(exchange_time: datetime, session_date: date) -> str:
 
 
 def to_generic(ice_code: str, session_date: str, commodity: str) -> Optional[str]:
-    """Generic slot for an in-universe contract, else None (Oct/Aug/pos>=3).
-    contract_resolver is CT-parametric today; non-CT returns None (softs
-    resolver extension is a flagged follow-on, build plan section 8)."""
+    """Generic slot for an in-universe contract, else None (excluded month/pos>=3).
+    Uses THIS commodity's real active months (commodity_meta.COMMODITY_MONTHS)
+    -- fixed 2026-07-31: previously always used CT's H/K/N/Z regardless of
+    `commodity`, silently NULLing generic_code for every KC/CC Sep(U) and
+    SB Oct(V) trade since ingestion began (backfilled in the same pass, see
+    MEMORY.md)."""
+    from commodity_meta import COMMODITY_MONTHS
+    cmd = commodity.upper()
     try:
-        info = ice_to_generic(ice_code, session_date, prefix=commodity.upper())
+        info = ice_to_generic(ice_code, session_date, prefix=cmd,
+                              active_months=COMMODITY_MONTHS.get(cmd))
     except Exception:
         return None
     return info.generic_code if info else None
