@@ -223,3 +223,78 @@ about what couldn't be verified server-side and have Lou confirm in-browser
 before calling it done.
 
 Committed + pushed: 807ecc1.
+
+## 2026-08-01 — futures settlement price overlay + a real KC/CC/SB data-loss bug found and fixed
+
+**Built:** settle + Open/High/Low overlay on the Daily Totals view. Source:
+local `futures_settle_<date>.csv` at the ICE eod capture root
+(`config.ICE_ROOT`) -- the SAME read-only source this engine already reads
+for volume, not a network call. Rejected two other sources first: the VLM
+Data Gateway's `oi_data.csv` (github passthrough, 53MB/~4.5s, T+1-only --
+had no data for the exact date Lou needed it for, a Friday not yet settled
+on the weekend he was writing a report), and options-sandbox's live snapshot
+cache (only ~11 days of history, live/last not settle). `C:\Ice eod records`
+turned out to have same-day settle+OHLC back to 2026-04-27 for all 4
+commodities, already the root this engine's own blotter ingest reads --
+Lou's push ("is vlm api not available for ice eod folder?") led to checking
+the real source instead of assuming the gateway covered everything.
+
+**Hard product requirement (Lou):** price must NEVER be fabricated,
+interpolated, or defaulted. Missing data is a visible gap everywhere --
+Plotly (`connectgaps:false`), the Daily Volume table (`—`), and the
+hand-drawn Canvas2D PNG export (line breaks on null, never bridges). A
+genuinely unreadable file is a real error, not silently treated as "no
+data" -- but one bad file in a date RANGE must not blank out every other
+date's real settle (found + fixed in the audit pass, see below).
+
+**Real bug found in production data, not hypothetical:** while building this,
+`contract_resolver.ice_to_generic()` was found to always resolve against
+CT's hardcoded H/K/N/Z month table regardless of the `prefix` arg --
+confirmed via live Supabase query that 100% of every KC/CC Sep(U) trade and
+every SB Oct(V) trade had `generic_code=NULL` since ingestion began (0% of
+every other month affected -- a clean, fully-explained pattern, not noise).
+Fixed additively (`ice_to_generic(..., active_months=None)`, default
+preserves CT's exact prior behavior, all 5 existing repo-root callers
+unaffected -- verified against the full 86+71 test suite before and after).
+Backfilled production: 183,277 `minute_agg` + 53,980 `bar5m` + 2,744,922
+`ticks` rows recomputed for KC/CC/SB, independently re-verified against live
+Supabase (not just the job log). Only remaining NULLs (SBN8/SBV8, far-dated
+position-2/3+ contracts) are legitimately out of the generic-slot window,
+confirmed by breakdown.
+
+**Lou's call on scope (verbatim, when I flagged this as a blast-radius
+question):** "why are we not fixing known bugs...this is a self contained
+app...what blast radius" -- pushed me to actually check downstream impact
+with real numbers instead of a general worry, which is the right instinct:
+the fix itself was genuinely additive/safe, the backfill was the only part
+with real blast radius (a write to already-migrated production data), and
+once dry-run-verified clean it was fine to just run it. Lesson: "blast
+radius" as a stop-and-ask trigger should be backed by an actual dry-run/
+count, not treated as a blanket reason to defer -- Lou will push back
+(correctly) if the caution isn't load-bearing.
+
+**Bug found in review after "review, test and audit" (Lou, post-ship):**
+dashboard's price fetch never sent the selected contract in its URL --
+`priceq` used the same `dq` (date-only) params as before, so `contract=`
+was never passed and price always silently fell back to front month
+regardless of what was picked in the (multi-select) contract picker. Not
+caught by the earlier adversarial-audit passes (they reviewed price.py's
+internals, not the dashboard's actual fetch wiring against picker state).
+Fixed: exactly one contract selected -> that contract's price; 0 or several
+(incl. "all") -> front month (no single coherent price for an aggregated
+multi-contract volume sum) -- confirmed Lou's own framing before building
+("the price should match the volume query"). Lesson: audit passes that
+review a module in isolation can miss integration bugs at the call site --
+worth a live end-to-end HTTP-level check of the actual UI state -> fetch
+URL -> response chain, not just unit-level correctness of the new module.
+
+**Also fixed in audit:** a single unreadable settle file in a date RANGE was
+raising `PriceUnavailable` and discarding every other date's already-read
+real data in the same response (`settle_series` now catches per-date,
+returns `errored_dates` so a genuine read failure is still visibly
+distinguished from an honest "no file yet" -- never silently identical).
+`.env` added to `.gitignore` (was untracked but unignored -- one broad
+`git add` away from committing live secrets; never actually committed).
+
+Committed + pushed: `3639e00` (resolver/ingest fix + backfill),
+`64d1f14` (price overlay feature).
