@@ -126,6 +126,7 @@
       <option value="5m">5 min</option>
       <option value="15m" selected>15 min</option>
       <option value="60m">60 min</option>
+      <option value="full">Full session</option>
     </select></div>
   <div class="ctl"><label>Trade types (include)</label>
     <div class="types" id="types">
@@ -527,6 +528,10 @@ function renderContinuous(p) {
     x: x.map(function(_, i){ return i; }),   // index -> no gaps
     y: y, text: txt, type: 'bar',
     marker: { color: '#c9a227' },
+    // Full timestamp lives in hover only -- printing it on/inside each bar
+    // (Plotly's default 'auto' textposition) is illegible at this bar
+    // density; textposition:'none' suppresses the on-bar label entirely.
+    textposition: 'none',
     hovertemplate: '%{text}<br>%{y:,.0f} lots<extra></extra>'
   }], {
     margin: { t: 10, r: 20, b: 80, l: 60 },

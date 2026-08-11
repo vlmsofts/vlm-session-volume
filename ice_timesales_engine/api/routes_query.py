@@ -127,10 +127,10 @@ def profile(cmd):
     if not dates:
         return jsonify({'error': 'date=YYYY-MM-DD or from=&to= required'}), 400
     try:
-        bucket = {'1m': 1, '5m': 5, '15m': 15, '60m': 60}[
+        bucket = {'1m': 1, '5m': 5, '15m': 15, '60m': 60, 'full': 'full'}[
             request.args.get('bucket', '15m')]
     except KeyError:
-        return jsonify({'error': 'bucket must be 1m|5m|15m|60m'}), 400
+        return jsonify({'error': 'bucket must be 1m|5m|15m|60m|full'}), 400
     try:
         types = _csv_param('types')
         types = [t.lower() for t in types] if types else None
@@ -160,7 +160,9 @@ def profile(cmd):
                    'bucket_minutes': bucket,
                    'freshness': _freshness(cmd, dates)}
         # Seed grain is 5 min -- flag when a finer request was coarsened.
-        if seed_dates and bucket < 5:
+        # ('full' collapses everything into one bucket regardless of grain,
+        # so it's never "coarsened up" the way a sub-5m request is.)
+        if seed_dates and bucket != 'full' and bucket < 5:
             payload['bucket_minutes_effective'] = 5
         if len(dates) == 1:
             d = dates[0]

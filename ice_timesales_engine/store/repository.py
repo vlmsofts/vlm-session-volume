@@ -123,16 +123,33 @@ def _fold(rows, bucket_minutes: int) -> list:
             for k, v in sorted(out.items())]
 
 
-def profile(db: Db, commodity: str, start: str, end: str, bucket_minutes: int,
+def _collapse(rows, label_ts: str) -> list:
+    """Sum ALL rows into a single bucket labeled at label_ts (the window's
+    own start) -- unlike _fold, this never floors by clock-time-of-day, so
+    it's the only correct way to produce one bar for a window that spans
+    midnight (e.g. the night session, 21:00->07:00). Empty rows -> []."""
+    if not rows:
+        return []
+    total_s = sum(r[1] for r in rows)
+    total_n = sum(r[2] for r in rows)
+    return [{'bucket_ts': label_ts[:16], 'sum_size': total_s, 'trade_count': total_n}]
+
+
+def profile(db: Db, commodity: str, start: str, end: str, bucket_minutes,
             contracts: Optional[list] = None,
             types: Optional[list] = None,
             session_date: Optional[str] = None,
             source: Optional[str] = None) -> list:
     """Time-profile: [{bucket_ts, sum_size, trade_count}] over [start, end).
     source='bloomberg' (with session_date) reads the bar5m seed archive;
-    its native grain is 5 min, so a finer request is served at 5 min."""
+    its native grain is 5 min, so a finer request is served at 5 min.
+    bucket_minutes='full' collapses the WHOLE [start, end) window to a single
+    row labeled at `start` -- one bar per session, correct even for windows
+    that cross midnight (night sessions), unlike a large numeric bucket which
+    would still floor-fold on clock-time-of-day and split at 00:00."""
     cf, cp = _contract_filter(contracts)
     tf, tp = _types_filter(types)
+    full = (bucket_minutes == 'full')
 
     if source == 'bloomberg':
         rows = db.q(
@@ -142,6 +159,8 @@ def profile(db: Db, commodity: str, start: str, end: str, bucket_minutes: int,
             + cf + tf + ' GROUP BY bucket_ts ORDER BY bucket_ts',
             [commodity.upper(), session_date,
              start[:16], end[:16]] + cp + tp)
+        if full:
+            return _collapse(rows, start)
         eff = max(bucket_minutes, 5)
         if eff <= 5:
             return [{'bucket_ts': ts, 'sum_size': s, 'trade_count': n}
@@ -153,6 +172,8 @@ def profile(db: Db, commodity: str, start: str, end: str, bucket_minutes: int,
         ' WHERE commodity=%s AND minute_ts >= %s AND minute_ts < %s'
         + cf + tf + ' GROUP BY minute_ts ORDER BY minute_ts',
         [commodity.upper(), start[:16], end[:16]] + cp + tp)
+    if full:
+        return _collapse(rows, start)
     return _fold(rows, bucket_minutes)
 
 
