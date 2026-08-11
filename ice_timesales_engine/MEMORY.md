@@ -298,3 +298,38 @@ distinguished from an honest "no file yet" -- never silently identical).
 
 Committed + pushed: `3639e00` (resolver/ingest fix + backfill),
 `64d1f14` (price overlay feature).
+
+---
+
+## Session: full-session bucket + continuous-view label fix (2026-08-11)
+
+**What:** Added `bucket=full` to `/v1/sessionvol/{cmd}/profile` (dashboard
+Bucket dropdown gained "Full session"). Collapses each session's whole
+resolved window (Night 21:00→07:00 / Day 07:00→14:20 / custom) into ONE bar
+per session — lets Lou trend night-total vs day-total volume across many
+sessions (Window=Night/Day, Bucket=Full session, View=Continuous). Also fixed
+Continuous view's on-bar timestamp text being illegible at density
+(`textposition:'none'`; full timestamp still in hover, x-axis already has one
+clean date tick per session).
+
+**Why not just a large numeric bucket (e.g. 1440 min)?** `_fold()` floors by
+clock-minute-of-day, so a large bucket on the Night window would silently
+SPLIT at midnight into two wrong bars instead of one. Proved with a synthetic
+midnight-crossing check before shipping: `_fold(rows, 1440)` returned
+150+50 (split) where the correct answer is one 200-lot bar. New `_collapse()`
+helper sums the ENTIRE queried range regardless of clock time and labels the
+single row at the window's own start — the only correct way to do this.
+
+**Rejected:** reusing `_fold` with a huge bucket_minutes value — looks
+right for Day windows (never crosses midnight) but silently wrong for Night,
+which is exactly the case Lou asked for ("if i want to see the night time").
+
+**Scope check:** additive only — new `full` enum value alongside existing
+1m/5m/15m/60m; `/profile` response shape unchanged; `bucket_minutes_effective`
+seed-grain flag guarded against the new string sentinel. 71/71 tests pass.
+
+**Deploy:** No Railway service is connected to `vlmsofts/vlm-session-volume`
+(checked all 27 projects in the account — confirmed with Lou, not assumed).
+Merged to `main` only (`c30e4ec`, ff from `feat/full-session-bucket`, branch
+deleted after merge); Lou deploys/serves this dashboard by a process outside
+Railway — ask him what it is if automating this matters later.
