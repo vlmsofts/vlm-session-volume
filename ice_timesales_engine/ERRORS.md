@@ -52,3 +52,33 @@ text changed.
 **Note:** Start_Session_Volume.bat intentionally reuses an already-running
 server (that's its design). After ANY code change, kill the listeners first
 or the "restart" is a no-op.
+
+## 2026-08-20 — TEMPLATE edits invisible: Jinja cache, not a port race
+
+**Didn't work:** editing `ui/templates/dashboard.html` (75 lines, verified on
+disk via git diff) and asking Lou to re-export the PNG — he got a
+byte-identical image twice. Unlike 2026-07-14 this was NOT a port race and NOT
+a duplicate listener: the right process was serving on 5062 and answering
+`/health` with `{"ok":true}` the whole time.
+
+**Cause:** `api/app.py` runs `create_app().run(..., debug=False)` and never set
+`TEMPLATES_AUTO_RELOAD`. Jinja compiles a template on first render and caches
+it for the life of the process, so a long-lived server keeps serving the
+dashboard.html it read at STARTUP. Disk edits are invisible until restart.
+Health checks and 200s tell you nothing — the old build answers them perfectly.
+
+**Worked instead:** diff the SERVED html, not the file —
+`curl -s http://127.0.0.1:5062/ | grep -c _niceAxis` returned **0** while the
+same grep on disk returned 12. That one command proves stale-vs-live in
+seconds. Then kill the PID, restart, and re-grep for the specific NEW symbol
+(not a 200) until it appears.
+
+**Fixed at the root:** `app.config['TEMPLATES_AUTO_RELOAD'] = True` in
+`create_app()`. Template edits now show on a browser refresh, no restart.
+Confirmed by the effect: edited a comment, and the old text vanished from the
+served HTML with the process untouched.
+
+**Note for next time:** for a UI-only change, the browser is a SECOND cache in
+front of this one. After the server is confirmed live, still hard-refresh
+(Ctrl+Shift+R) — the PNG is drawn by in-page JS, so a cached page keeps drawing
+the old canvas even against a correct server. Two caches, two fixes.

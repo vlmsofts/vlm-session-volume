@@ -333,3 +333,56 @@ seed-grain flag guarded against the new string sentinel. 71/71 tests pass.
 Merged to `main` only (`c30e4ec`, ff from `feat/full-session-bucket`, branch
 deleted after merge); Lou deploys/serves this dashboard by a process outside
 Railway — ask him what it is if automating this matters later.
+
+---
+
+## 2026-08-20 — PNG export: nice-axis + timeframe stamp (display only)
+
+**What:** Two purely cosmetic fixes to the Download-PNG export in
+`ui/templates/dashboard.html`, both reported by Lou against the Daily Totals
+view (the on-screen Plotly chart was already correct — only the exported PNG
+was wrong).
+
+1. **Axis was wildly too wide.** `_pngDrawChart` set the volume axis top with
+   `Math.pow(10, Math.ceil(Math.log10(maxV)))`, halved once. Only powers of ten
+   and their halves were reachable, so a 10,529 max snapped to a **50,000**
+   axis and every bar sat in the bottom fifth. New `_niceAxis(v)` tries 4 AND 5
+   gridline bands against a 1/2/2.5/5 x 10^n ladder and keeps whichever wastes
+   least headroom: 10,529 -> **12,500 over 5 bands, 84% fill**, ticks still
+   round (0/2.5k/5k/7.5k/10k/12.5k). Band count is no longer hardcoded — it
+   flows from `_niceAxis` into the gridline loop (`BANDS`), so the price axis
+   on the right stays aligned to the same bands.
+
+2. **No timeframe on the PNG.** The export is shared standalone, so it now
+   states its window in two places: the header subtitle
+   (`CT — Cotton No. 2 · Daily Totals · 21:00 → 07:00 ET`) and a
+   `WINDOW (EACH SESSION)` KPI tile, plus `AVG / SESSION` — matching the tile
+   row the dashboard already shows. New `_pngWindow(w)` mirrors on-screen
+   `windowStat()` logic exactly rather than re-deriving it.
+
+**Why `_pngWindow` can't just print `w.window`:** in multi-day mode `w.window`
+holds only the LAST session's bounds. Printing it raw across a range would
+misstate the timeframe — so single session prints real bounds, multi-day
+prints the repeating clock-time filter, same rule as `windowStat()`.
+
+**Knock-on that had to be handled:** the new tiles pushed Daily Totals to 8
+KPI tiles. At 7-across, `WINDOW (EACH SESSION)` needs ~130px against a 129px
+budget — the label would have run through the tile border (only the *value*
+font shrank to fit; the label never did). So: tile row wraps at 6 per row,
+labels now shrink like values, and canvas height derives from the wrapped row
+count (`KPI_BLOCK`) — without that the tables and footer would have run off the
+bottom of the bitmap.
+
+**Scope:** display only. No API shape, column, date convention, or query path
+touched — zero blast radius. 86/86 tests pass (they cover the Python engine,
+not the template; the template was verified against the live server).
+
+**Also fixed — the reason this took two rounds:** `api/app.py` ran
+`debug=False` with no `TEMPLATES_AUTO_RELOAD`, so Jinja served the
+`dashboard.html` it compiled at startup and disk edits were invisible until
+restart. See ERRORS.md. Added `app.config['TEMPLATES_AUTO_RELOAD'] = True`.
+
+**Not verified by me:** no Node in this environment, so there is no headless
+render of the actual canvas. Logic was proven by porting `_niceAxis` verbatim
+to Python and by bracket-balancing the served script; the pixel output was
+confirmed by Lou from the browser.

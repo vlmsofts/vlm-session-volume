@@ -789,6 +789,20 @@ function _pngSeries() {
   }
 }
 
+// The session window exactly as windowStat() shows it on screen: a single
+// session prints its real bounds, a multi-day range prints the repeating
+// clock-time filter (w.window holds only the LAST session's bounds, so
+// printing it raw across a range would be a lie).
+function _pngWindow(w) {
+  if (!w || !w.window) return null;
+  var n = (w.dates || []).length;
+  if (n <= 1) {
+    return w.window.start.slice(5,16).replace('T',' ') + ' → '
+         + w.window.end.slice(5,16).replace('T',' ');
+  }
+  return w.window.start.slice(11,16) + ' → ' + w.window.end.slice(11,16);
+}
+
 function _pngStats() {
   // Same numbers as the on-screen stat tiles -- {label, value, color}[].
   var L = _LAST;
@@ -809,7 +823,12 @@ function _pngStats() {
     {label:'EFS + EFP', value: fmt((t.by_type.efs||0)+(t.by_type.efp||0))}
   ];
   var n = (L.w.dates||[]).length;
-  if (n > 1) { tiles.push({label:'Sessions', value: String(n)}); }
+  if (n > 1) {
+    tiles.push({label:'Sessions', value: String(n)});
+    tiles.push({label:'Avg / session', value: fmt((t.all||0)/n)});
+  }
+  var win = _pngWindow(L.w);
+  if (win) { tiles.push({label: n > 1 ? 'Window (each session)' : 'Window', value: win}); }
   if (L.view === 'totals' && L.priceInfo && L.priceInfo.avg_settle != null) {
     tiles.push({label: 'Avg ' + (L.priceInfo.price_label || 'Settle (front month)'),
                value: L.priceInfo.avg_settle.toFixed(2)});
@@ -846,7 +865,10 @@ function exportPng() {
   var HDR_H = 78, ACCENT = 4, KPI_H = 76, CHART_H = 360, FOOT_H = 34;
   var ROW_H = 26, THEAD_H = 28, SEC_H = 30, SEC_GAP = 14;
   function tblH(t) { return SEC_H + THEAD_H + t.rows.length*ROW_H + SEC_GAP; }
-  var H = HDR_H + ACCENT + 12 + KPI_H + 16 + CHART_H + 16
+  var _perRow = Math.min(stats.length, 6);
+  var _kpiRows = Math.ceil(stats.length / _perRow);
+  var KPI_BLOCK = _kpiRows*KPI_H + (_kpiRows-1)*10;
+  var H = HDR_H + ACCENT + 12 + KPI_BLOCK + 16 + CHART_H + 16
         + (tables.daily ? tblH(tables.daily) : 0)
         + tblH(tables.contract) + tblH(tables.type) + FOOT_H;
 
@@ -871,7 +893,9 @@ function exportPng() {
   cx.fillStyle = PNG.gold; cx.font = 'bold 14px Arial';
   cx.fillText('ICE TIME & SALES — SESSION VOLUME', PAD, 54);
   cx.fillStyle = PNG.muted; cx.font = '12px Arial';
-  cx.fillText(L.cmd + ' — ' + name + '  ·  ' + viewLabel, PAD, 70);
+  var _win = (L.view === 'ab') ? _pngWindow(L.wB) : _pngWindow(L.w);
+  cx.fillText(L.cmd + ' — ' + name + '  ·  ' + viewLabel
+              + (_win ? '  ·  ' + _win + ' ET' : ''), PAD, 70);
   cx.textAlign = 'right';
   cx.fillStyle = PNG.white; cx.font = 'bold 16px Arial';
   cx.fillText(L.dateLabel, W-PAD, 34);
@@ -881,20 +905,28 @@ function exportPng() {
 
   var y = HDR_H + ACCENT + 12;
 
-  // KPI tiles
-  var gap = 10, tileW = Math.floor((W - PAD*2 - gap*(stats.length-1)) / stats.length);
+  // KPI tiles -- wrap to a second row past 6 across, otherwise long labels
+  // like WINDOW (EACH SESSION) outgrow their tile.
+  var gap = 10, perRow = Math.min(stats.length, 6);
+  var kpiRows = Math.ceil(stats.length / perRow);
+  var tileW = Math.floor((W - PAD*2 - gap*(perRow-1)) / perRow);
   stats.forEach(function(s, i) {
-    var tx = PAD + i*(tileW+gap);
-    cx.fillStyle = PNG.alt; cx.fillRect(tx, y, tileW, KPI_H);
-    cx.strokeStyle = PNG.border; cx.lineWidth = 1; cx.strokeRect(tx+0.5, y+0.5, tileW-1, KPI_H-1);
+    var col = i % perRow, row = Math.floor(i / perRow);
+    var tx = PAD + col*(tileW+gap), ty = y + row*(KPI_H+gap);
+    cx.fillStyle = PNG.alt; cx.fillRect(tx, ty, tileW, KPI_H);
+    cx.strokeStyle = PNG.border; cx.lineWidth = 1; cx.strokeRect(tx+0.5, ty+0.5, tileW-1, KPI_H-1);
     cx.textAlign = 'left'; cx.textBaseline = 'alphabetic';
-    cx.fillStyle = PNG.lgray; cx.font = 'bold 10px Arial';
-    cx.fillText(s.label.toUpperCase(), tx+12, y+22);
+    // Label shrinks to fit too -- the value already did, but an overflowing
+    // label ran straight through the tile border.
+    cx.fillStyle = PNG.lgray; var ls = 10; cx.font = 'bold '+ls+'px Arial';
+    var lbl = s.label.toUpperCase();
+    while (cx.measureText(lbl).width > tileW-24 && ls > 7) { ls--; cx.font = 'bold '+ls+'px Arial'; }
+    cx.fillText(lbl, tx+12, ty+22);
     cx.fillStyle = s.color || PNG.navy; var fs = 22; cx.font = 'bold '+fs+'px Arial';
     while (cx.measureText(s.value).width > tileW-24 && fs > 12) { fs--; cx.font = 'bold '+fs+'px Arial'; }
-    cx.fillText(s.value, tx+12, y+KPI_H-16);
+    cx.fillText(s.value, tx+12, ty+KPI_H-16);
   });
-  y += KPI_H + 16;
+  y += kpiRows*KPI_H + (kpiRows-1)*gap + 16;
 
   // Chart -- bars or lines, hand-drawn to canvas coordinates
   _pngDrawChart(cx, chartData, PAD, y, W-PAD*2, CHART_H);
@@ -922,6 +954,27 @@ function exportPng() {
   link.click();
 }
 
+// Tightest "nice" axis >= v: tries 4 and 5 gridline bands against a
+// 1/2/2.5/5 x 10^n step ladder and keeps whichever wastes least headroom,
+// so every tick stays a round number AND the tallest bar fills the plot.
+// Returns {top, bands}.
+function _niceAxis(v) {
+  if (!(v > 0)) return { top: 1, bands: 4 };
+  var LADDER = [1, 2, 2.5, 5, 10], best = null;
+  [4, 5].forEach(function(bands) {
+    var step = v / bands;
+    var mag = Math.pow(10, Math.floor(Math.log10(step)));
+    for (var i = 0; i < LADDER.length; i++) {
+      var top = LADDER[i] * mag * bands;
+      if (top >= v - 1e-9) {
+        if (!best || top < best.top) best = { top: top, bands: bands };
+        break;
+      }
+    }
+  });
+  return best || { top: v, bands: 4 };
+}
+
 function _pngDrawChart(cx, data, x0, y0, w, h) {
   cx.fillStyle = PNG.white; cx.fillRect(x0, y0, w, h);
   cx.strokeStyle = PNG.border; cx.strokeRect(x0+0.5, y0+0.5, w-1, h-1);
@@ -931,8 +984,12 @@ function _pngDrawChart(cx, data, x0, y0, w, h) {
   var allVals = [];
   data.series.forEach(function(s){ allVals = allVals.concat(s.values); });
   var maxV = Math.max.apply(null, allVals.concat([1]));
-  var niceMax = maxV <= 0 ? 1 : Math.pow(10, Math.ceil(Math.log10(maxV)));
-  if (niceMax / 2 >= maxV) niceMax /= 2;
+  // Axis top = smallest 1/2/2.5/5 x 10^n step ABOVE maxV, divided into the
+  // gridline bands below. Plain power-of-ten rounding overshot badly (a 10.5k
+  // max snapped to a 50k axis, squashing every bar into the bottom fifth) --
+  // this ladder keeps the tallest bar filling most of the plot, matching what
+  // Plotly picks on screen.
+  var axis = _niceAxis(maxV), niceMax = axis.top, BANDS = axis.bands;
 
   // Secondary (price) axis -- OWN min/max, never folded into the volume
   // bars' scale. Nulls (missing settle) are excluded from the range calc,
@@ -944,17 +1001,17 @@ function _pngDrawChart(cx, data, x0, y0, w, h) {
   var secPad = (secMax - secMin) * 0.1;
   secMin -= secPad; secMax += secPad;
 
-  // Gridlines + y-axis labels (4 bands) -- left = volume, right = price (if present)
+  // Gridlines + y-axis labels -- left = volume, right = price (if present)
   cx.strokeStyle = PNG.border; cx.fillStyle = PNG.lgray; cx.font = '10px Arial';
   cx.textBaseline = 'middle';
-  for (var g = 0; g <= 4; g++) {
-    var gy = plotY + plotH - (plotH * g/4);
+  for (var g = 0; g <= BANDS; g++) {
+    var gy = plotY + plotH - (plotH * g/BANDS);
     cx.beginPath(); cx.moveTo(plotX, gy); cx.lineTo(plotX+plotW, gy); cx.stroke();
     cx.textAlign = 'right';
-    cx.fillText(fmt(niceMax * g/4), plotX-8, gy);
+    cx.fillText(fmt(niceMax * g/BANDS), plotX-8, gy);
     if (data.secondary) {
       cx.textAlign = 'left';
-      cx.fillText((secMin + (secMax-secMin)*g/4).toFixed(2), plotX+plotW+8, gy);
+      cx.fillText((secMin + (secMax-secMin)*g/BANDS).toFixed(2), plotX+plotW+8, gy);
     }
   }
 

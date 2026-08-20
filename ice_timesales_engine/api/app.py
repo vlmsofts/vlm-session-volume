@@ -20,6 +20,10 @@ def create_app(database_url: str = None) -> Flask:
         template_folder=os.path.join(repo_root, 'ui', 'templates'),
         static_folder=os.path.join(repo_root, 'ui', 'static'),
     )
+    # Jinja caches the compiled template at first render, so with this off a
+    # long-lived server keeps serving the dashboard.html it read at startup and
+    # edits to the file are invisible until the process restarts.
+    app.config['TEMPLATES_AUTO_RELOAD'] = True
     app.config['DB'] = connect(database_url)
 
     from api.routes_query import bp as query_bp
