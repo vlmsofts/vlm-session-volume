@@ -27,12 +27,12 @@ Five things the card needs that no existing query returned:
      400 of 400 across three sessions. The definition the proof rests on is the
      definition shipped -- hence same-SIZE, not merely same-second.
 
-  4. BLANKS OUT OF THE AGGRESSOR BASE. Blank-condition prints are implied
-     calendar spread fills (same-second cross-contract coincidence at 3-4x the
-     control rate, size-matched about half the time, price differential inside
-     the published spread day range 400 of 400). They stay IN the total and OUT
-     of the aggressor count, and are never prorated across buy and sell --
-     that would invent sides.
+  4. BLANKS OUT OF THE AGGRESSOR BASE. Blank-condition prints carry no
+     aggressor stamp. They stay IN the total (they are real volume, and the
+     exchange counts them) and OUT of the aggressor count (with no aggressor
+     they cannot be netted into buy or sell), and they are never prorated
+     across buy and sell -- that would invent sides. This ruling does NOT
+     depend on what mechanism produces them; see the section below.
 
   5. AGGRESSOR ON A HONEST BASE. Aggressor-tagged outrights only. EFS, EFP,
      cancelled, leg and blank are all out, with clip size per side and the
@@ -46,6 +46,59 @@ reported 10,785 "paired" prints on Z26 against a true 1,055, and cost 5.84s.
 The question is per-PRINT -- does THIS print have ANY qualifying partner -- and
 that is EXISTS, which cost 0.32s for the same session. Do not reach for a join
 here.
+
+WHAT PRODUCES THE BLANK PRINTS: MEASURED, AND ONLY HALF EXPLAINED
+-----------------------------------------------------------------
+The card deliberately makes NO mechanism claim about blank-condition prints.
+It states two facts, both true of 100 percent of them: they are real volume,
+and they carry no aggressor so they cannot be netted into a side. An earlier
+card wording called them "implied calendar spread fills"; that was removed on
+2026-08-24 because the evidence supports it for roughly half to two thirds of
+the volume, not all of it. Volume is volume either way -- the mechanism does
+not change whether the lots are real -- so the ruling in point 4 stands
+regardless of everything below.
+
+The investigation is recorded here because it is why the label reads as it
+does. Measured on CT Z26 over 2026-08-19, 08-20 and 08-21, per SECOND (the
+per-print unit gives a control roughly 3x too high and is the wrong unit).
+
+MONOTONIC GRADIENT ACROSS THE STRIP. Share of Z26 blank seconds with a
+same-second blank print on each counterpart, each against its own control of
+non-blank Z26 seconds:
+
+    counterpart   08-19          08-20          08-21
+    H27           30.7 / 6.2     43.2 / 8.0     31.0 / 5.8
+    K27           33.7 / 4.8     43.4 / 7.9     31.0 / 6.8
+    N27           18.8 / 2.7     32.4 / 5.0     17.9 / 4.6
+    Z27           11.0 / 1.6     16.9 / 3.8      8.5 / 2.6
+
+Nearer contracts pair more often than distant ones, in every session, and
+every rate is lifted 3.3x to 7.1x over its own control. That gradient is what
+an implied chain across the strip would look like.
+
+RESCUE. Of the Z26 blank seconds H27 could NOT explain, a quarter to a third
+pair on K27, N27 or Z27: 25.9, 31.1 and 24.6 percent against controls of 3.2,
+4.6 and 5.4.
+
+SIZE MATCHING holds on every counterpart, 96.7 to 100 percent, including the
+ones with no published spread.
+
+NO PUBLISHED ROW for Z26:K27 or Z26:N27. spreads_<date>.csv lists only
+Z26:H27, H27:K27, K27:N27, N27:Z27 and Z26:Z27, so there is no day range to
+price-check those pairs against. Stated as an absence, not used as evidence.
+Where a range does exist, Z26:H27 prices inside it 244/249, 329/338 and
+172/174; Z26:Z27 is weaker at 57/88 and 109/134 on the first two sessions and
+48/48 on the third, and that weakness is UNEXPLAINED.
+
+SHARE OF BLANK LOTS EXPLAINED, H27 alone vs all four counterparts:
+    08-19  35.5 -> 56.4 percent      08-20  53.5 -> 69.2      08-21  35.2 -> 51.9
+
+THE RESIDUAL, stated plainly: 984, 636 and 579 lots (30.8 to 48.1 percent of
+blank volume) have no same-second blank partner on ANY other CT future. Its
+profile is indistinguishable from the explained population -- average clip
+1.15-1.17 vs 1.06-1.13, one-lots 91.7-93.1 vs 93.2-95.9 percent, max 8-10 vs
+5-10 -- so it is not a different population hiding in the bucket. NO MECHANISM
+IS PROPOSED FOR IT. An honest residual is a finding.
 
 PROVENANCE OF THE FIGURES BELOW. Everything quoted in this module was measured
 in this repo on 2026-08-24 against the live store, and the JOIN-vs-EXISTS

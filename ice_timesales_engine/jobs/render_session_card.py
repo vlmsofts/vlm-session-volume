@@ -257,15 +257,23 @@ def build(commodity, session_date, ice_code, out_dir):
     txt(58, 28.5, 'hedge is a leg print without one.', 8.4, MUTED)
 
     # ---- blanks ---------------------------------------------------------
+    # TWO FACTS, NO MECHANISM. The reader's question is whether the number
+    # counts and whether it has a side. Both answers are true of 100 percent
+    # of these lots, so nothing here outruns the evidence and no hedging word
+    # is needed. A mechanism claim ("implied calendar spread fills") was
+    # removed on 2026-08-24: the evidence supports it for roughly half to two
+    # thirds of the volume, and a client page is not where a partly supported
+    # mechanism belongs. The finding is kept in full in
+    # store/session_render.py, which is where a future session should look.
     txt(58, 24.0, 'Unstamped fills', 9, MUTED, 'bold')
     txt(58, 20.8, f'{_fmt(blanks["lots"])} lots across '
                   f'{_fmt(blanks["prints"])} prints carry no aggressor stamp.',
         8.4, MUTED)
-    txt(58, 18.6, 'The evidence is that these are implied calendar spread '
-                  'fills.', 8.4, MUTED)
-    txt(58, 16.4, 'They are included in the tape volume above and excluded '
-                  'from', 8.4, MUTED)
-    txt(58, 14.2, 'the aggressor base. No side is assigned to them.',
+    txt(58, 18.6, 'They are real volume and are included in the total above.',
+        8.4, MUTED)
+    txt(58, 16.4, 'Because they carry no aggressor they cannot be netted into',
+        8.4, MUTED)
+    txt(58, 14.2, 'buy or sell, so they are excluded from the aggressor base.',
         8.4, MUTED)
     rule(11.5)
 
