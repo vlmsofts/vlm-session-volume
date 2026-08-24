@@ -7,6 +7,7 @@ Sub-minute / non-minute-aligned windows fall back to a ticks scan (rare).
 
 from typing import Optional
 
+from ingest.classifier import clean_split, excluded_sql
 from store.db import Db
 
 
@@ -20,6 +21,32 @@ def _contract_filter(contracts: Optional[list]):
 
 
 def _types_filter(types: Optional[list]):
+    """SQL fragment + params for the primary_type filter.
+
+    R11, DEFAULT CLEAN / EXPLICIT DIRTY (classifier.EXCLUDED_FROM_CLEAN owns
+    the rule; this only applies it):
+      * types given    -> honour them EXACTLY, including an explicit request
+                          for efs_delete. Asking for cancelled flow by name
+                          must still return it, so no exclusion is layered on.
+      * types not given -> the caller took the default, and the default must
+                          never draw busted lots as flow. Cancelled buckets are
+                          excluded here.
+
+    This is why profile()/traded_contracts() are clean by default without each
+    growing its own predicate: they both build their WHERE through this helper."""
+    if not types:
+        return excluded_sql()
+    ph = ','.join(['%s'] * len(types))
+    return f' AND primary_type IN ({ph})', list(types)
+
+
+def _types_filter_all(types: Optional[list]):
+    """Like _types_filter but WITHOUT the default R11 exclusion.
+
+    For the one caller that must see every bucket in order to REPORT the
+    excluded half: window_sum does the clean/excluded split itself, so filtering
+    cancelled rows out of its scan would hide the very lots P6.6 requires it to
+    account for. Every other caller wants _types_filter."""
     if not types:
         return '', []
     ph = ','.join(['%s'] * len(types))
@@ -50,12 +77,29 @@ def window_sum(db: Db, commodity: str, start: str, end: str,
                types: Optional[list] = None,
                session_date: Optional[str] = None,
                source: Optional[str] = None) -> dict:
-    """Totals for [start, end) -- by_type, by_contract, all, clean.
+    """Totals for [start, end) -- all, clean, excluded, by_type, by_contract.
     start/end are ISO naive ET strings. source='bloomberg' (with
     session_date) serves the day from the bar5m seed archive instead of
-    the live ICE tables -- see bloomberg_cutoff."""
+    the live ICE tables -- see bloomberg_cutoff.
+
+    THIS FUNCTION IS THE RESOLVER for R11 (cancelled prints never count). It
+    does not own the rule -- classifier.EXCLUDED_FROM_CLEAN does -- it applies
+    it via clean_split() and reports both halves.
+
+    'clean' means: the all-in total MINUS every bucket R11 classes as cancelled
+    flow. Today that is exactly efs_delete, so 'clean' currently reads as
+    "all-in minus busted prints". Do not read the name as narrower than the
+    rule: if EXCLUDED_FROM_CLEAN ever grows, 'clean' grows with it and this
+    docstring is the contract, not the old one-term subtraction. The key name
+    is deliberately unchanged so existing callers keep working.
+
+    'excluded' / 'excluded_by_type' are the P6.6 accounting half: the discarded
+    lots stay counted and attributable, never silently dropped. The invariant
+    clean + excluded == all holds for every window, source and filter."""
     cf, cp = _contract_filter(contracts)
-    tf, tp = _types_filter(types)
+    # _all: this function REPORTS the excluded half, so its scan must see the
+    # cancelled buckets. clean_split() below does the excluding, not the SQL.
+    tf, tp = _types_filter_all(types)
 
     if source == 'bloomberg':
         # Seed grain is 5 min and window presets are 5-min aligned, so
@@ -72,10 +116,12 @@ def window_sum(db: Db, commodity: str, start: str, end: str,
         by_contract = {c: s for c, s in db.q(
             f'SELECT ice_code, SUM(sum_size) {base} GROUP BY ice_code',
             params)}
-        total = sum(by_type.values())
+        clean, excluded, excluded_by_type = clean_split(by_type)
         return {
-            'all': total,
-            'clean': total - by_type.get('efs_delete', 0.0),
+            'all': clean + excluded,
+            'clean': clean,
+            'excluded': excluded,
+            'excluded_by_type': excluded_by_type,
             'by_type': by_type,
             'by_contract': by_contract,
         }
@@ -96,10 +142,12 @@ def window_sum(db: Db, commodity: str, start: str, end: str,
         params)}
     by_contract = {c: s for c, s in db.q(
         f'SELECT ice_code, SUM({size_expr}) {base} GROUP BY ice_code', params)}
-    total = sum(by_type.values())
+    clean, excluded, excluded_by_type = clean_split(by_type)
     return {
-        'all': total,
-        'clean': total - by_type.get('efs_delete', 0.0),
+        'all': clean + excluded,
+        'clean': clean,
+        'excluded': excluded,
+        'excluded_by_type': excluded_by_type,
         'by_type': by_type,
         'by_contract': by_contract,
     }
@@ -180,19 +228,20 @@ def profile(db: Db, commodity: str, start: str, end: str, bucket_minutes,
 def traded_contracts(db: Db, commodity: str, session_date: str,
                      source: Optional[str] = None) -> list:
     """[{ice_code, generic_code, total}] traded on a session date.
-    source='bloomberg' reads the seed archive (dates before the cutoff)."""
-    if source == 'bloomberg':
-        rows = db.q("""
-            SELECT ice_code, generic_code, SUM(sum_size) FROM bar5m
-            WHERE source='bloomberg' AND commodity=%s AND session_date=%s
-            GROUP BY ice_code, generic_code ORDER BY 3 DESC
-        """, (commodity.upper(), session_date))
-    else:
-        rows = db.q("""
-            SELECT ice_code, generic_code, SUM(sum_size) FROM minute_agg
-            WHERE commodity=%s AND session_date=%s
-            GROUP BY ice_code, generic_code ORDER BY 3 DESC
-        """, (commodity.upper(), session_date))
+    source='bloomberg' reads the seed archive (dates before the cutoff).
+
+    'total' is CLEAN per R11: cancelled flow never counts (the exclusion comes
+    from classifier.EXCLUDED_FROM_CLEAN via excluded_sql, not a local predicate).
+    This list drives contract pickers and per-contract tables, both of which are
+    client-facing, so the default must not carry busted lots."""
+    ex, exp = excluded_sql()
+    table = 'bar5m' if source == 'bloomberg' else 'minute_agg'
+    seed = " AND source='bloomberg'" if source == 'bloomberg' else ''
+    rows = db.q(
+        f'SELECT ice_code, generic_code, SUM(sum_size) FROM {table}'
+        f' WHERE commodity=%s AND session_date=%s' + seed + ex +
+        ' GROUP BY ice_code, generic_code ORDER BY 3 DESC',
+        [commodity.upper(), session_date] + exp)
     return [{'ice_code': i, 'generic_code': g, 'total': s} for i, g, s in rows]
 
 

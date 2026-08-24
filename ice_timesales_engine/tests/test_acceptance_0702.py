@@ -73,7 +73,11 @@ class TestAcceptance0702:
         contracts = repo.traded_contracts(loaded_db, 'CT', SESS)
         z26 = next(c for c in contracts if c['ice_code'] == 'CTZ6')
         assert z26['generic_code'] == 'CTDEC1'
-        assert z26['total'] == EXPECTED['full']
+        # R11: traded_contracts is CLEAN by default, so this is full MINUS the
+        # 99 busted lots (18,366 -> 18,267). It asserted the all-in figure until
+        # cancelled prints were ruled out of every default tally.
+        assert z26['total'] == EXPECTED['full'] - EXPECTED['efs_delete']
+        assert z26['total'] == 18267.0
 
     def test_clean_total_excludes_efs_delete(self, loaded_db):
         full = repo.window_sum(loaded_db, 'CT',

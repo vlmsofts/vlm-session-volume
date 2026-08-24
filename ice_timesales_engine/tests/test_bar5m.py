@@ -29,8 +29,19 @@ def test_map_bbg_conditions(cc, expected):
     assert map_bbg_conditions(cc) == expected
 
 
-def test_map_precedence_efs_delete_beats_everything():
-    assert map_bbg_conditions('*X,ST,NDOO') == 'efs_delete'
+def test_cancel_marker_keeps_the_print_s_type_identity():
+    """WIDENED 2026-08-24 (Lou's tag ruling). Asserted efs_delete until R11
+    was keyed on the Delete tag rather than a bucket name: a cancelled
+    spread leg is a cancelled LEG, not an EFS bust. Both are excluded from
+    every default total, so no clean figure moves -- what changes is that the
+    cancelled lots stay attributable to the right trade type.
+
+    Bare '*X' is the deliberate exception: it stays efs_delete, because that
+    is what the 07-02 reconciliation actually verified (99 == 99 lots) and
+    bar5m keeps no raw codes to re-derive it from."""
+    assert map_bbg_conditions('*X,ST,NDOO') == 'leg_delete'
+    assert map_bbg_conditions('B,*X') == 'block_delete'
+    assert map_bbg_conditions('*X') == 'efs_delete'
 
 
 def test_map_p_only_alone_is_efp():

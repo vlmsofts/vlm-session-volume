@@ -386,3 +386,124 @@ restart. See ERRORS.md. Added `app.config['TEMPLATES_AUTO_RELOAD'] = True`.
 render of the actual canvas. Logic was proven by porting `_niceAxis` verbatim
 to Python and by bracket-balancing the served script; the pixel output was
 confirmed by Lou from the browser.
+
+---
+
+## 2026-08-24 — R11 applied: cancelled prints never count
+
+**STATUS: BUILT, UNPROVEN LIVE.** Every claim below is from the test suite and
+the local store. Nothing has run against a live session or a full replay.
+
+**What was decided.** A Delete-tagged print is a busted trade, not flow, and
+must never land in a default tally, chart, table or client-facing number. R11
+already existed in the analyzer repo; this extends the same ruling here. ONE
+ruling, not a second mechanism.
+
+**Step 0 finding (checked before writing code).** `repository.window_sum`
+ALREADY returned a `clean` figure excluding exactly `efs_delete`, with a
+standing test. The data layer and classifier were correct the whole time. So
+this was a wiring and labelling job, not a new mechanism. Third time in this
+program the answer was already on disk.
+
+**Where the rule lives.** `ingest/classifier.EXCLUDED_FROM_CLEAN` plus
+`is_excluded()` / `clean_split()` / `excluded_sql()`. Chosen because the
+classifier already owns the type vocabulary and both layers already import it,
+so there is no upward dependency and no new module. REJECTED: putting it in
+`store/repository.py` (would force ingest to import upward) and a new
+`rules.py` (a module for one constant).
+
+**Sites changed.** `rollup._window_sums` (the real defect: grouped by
+window_preset with no type filter, so cancelled lots entered night/day/full);
+`reconcile.build_reconcile`; `repository.traded_contracts`;
+`repository._types_filter` (default clean, explicit dirty, which is what fixes
+`profile` and therefore the intraday chart); dashboard headline flipped from
+`totals.all` to `totals.clean` at 9 client-facing sites.
+
+**Excluded accounting (P6.6).** No silent drops. `window_sum` returns
+`excluded` + `excluded_by_type`; `_window_sums` returns per-contract
+`excluded`; both emit functions report `excluded_lots`. Invariant asserted:
+clean + excluded == all.
+
+**`clean` keeps its name** but now carries a fuller meaning: all-in minus every
+bucket R11 classes as cancelled, which today is exactly `efs_delete`. Stated in
+the `window_sum` docstring so a future session does not have to infer it.
+
+**Sidecar re-emission.** CT 2026-07-02 re-emitted, the entire measured
+contaminated set. Session row full_total 27,858 -> 27,759; CTZ6 row full
+18,366 -> 18,267 (day 14,699 -> 14,600). Verified by diff that ONLY those two
+volume figures changed; the other four contract rows show only a `generated_at`
+refresh. The shared VLM history files were NOT touched (blast-radius gate,
+build plan section 7, confirmed: last modified 2026-06-26).
+
+**Root cause of the drift.** `_window_sums` had NO test at all. That absence,
+not the missing filter, is why the rollup layer diverged from the repository
+layer. Now covered by `tests/test_r11_cancelled_never_counts.py` (13 tests),
+which proves the guard fires on Delete AND does not over-fire on plain EFS or
+EFP, and includes a guard against a second copy of the rule appearing anywhere
+in the tree. That guard was itself sabotage-tested: injecting a duplicate rule
+into repository.py made it go red, and it went green on restore.
+
+**NOT done, deliberately.** `reconcile.build_reconcile` compares the tape
+against `futures_settle` Volume, which is the PRIOR session's figure (measured
+in C:\Ice eod records: 165 contract-days match D-1 exactly, ZERO match same-day).
+It therefore grades today's tape against yesterday's volume. Commented in place,
+queued as separate work; the field belongs to another repo.
+
+**Suite: 84 passed, zero red.**
+
+---
+
+## 2026-08-24 -- R11 WIDENED TO THE DELETE TAG (Lou's ruling)
+
+**STATUS: BUILT, UNPROVEN LIVE.** Measured from stored data and the CT blotter
+corpus. No live session has run through the widened ladder.
+
+**Decided.** Exclusion keys on the Delete TAG, not on the bucket name
+`efs_delete`. Delete is orthogonal to trade type: a cancelled block is
+cancelled. The old rule missed 340 of 1,262 cancelled lots in the CT corpus
+(`BlockTrde, Leg, Delete` 186, `BlockTrde, Delete` 127, `EFP, Delete` 22,
+`Leg, Delete` 5) purely because the ladder puts BlockTrde above Leg above the
+aggressor tags. That was an implementation artifact, never the ruling.
+
+**Implementation: a cancelled bucket per base type**, not a boolean column.
+REJECTED the boolean because `minute_agg` and `bar5m` are keyed on
+`(.., primary_type)` ONLY -- there is no tag column at that grain, so a
+cancelled block aggregated there is INDISTINGUISHABLE from a live block and no
+SQL predicate can recover it. Proven on a live rebuild before choosing. Carrying
+the tag in the bucket is what makes the exclusion expressible in the aggregate
+tables at all, and it keeps cancelled volume attributable per type.
+
+**`efs_delete` KEPT as-is.** Historic name, stored on disk in ticks/minute_agg/
+bar5m, and the target of existing `types=['efs_delete']` queries. Renaming it
+would have invalidated every stored row.
+
+**Retrievability (req 1):** `classifier.CANCELLED_TYPES` addresses the whole
+set; `/catalog` DERIVES its type list from the constant rather than hand-listing
+it, so a future widening cannot leave cancelled volume unadvertised.
+`is_cancelled` is an alias of `is_excluded`, not a second rule.
+
+**bbg_map `*X`:** now tag-keyed too, EXCEPT bare `'*X'`, which stays
+`efs_delete` deliberately -- the 07-02 reconciliation verified it at 99 == 99
+lots, all EFS busts, and bar5m stores no raw conditionCodes, so mapping bare
+`*X` to outright_delete would be an inference, not a measurement. Evidence over
+inference.
+
+**Checksum re-run (req 4):** 19 FLAG / 14 flagged contract-days -> 18 FLAG / 12,
+OK 17 -> 18. The two resolved are 2026-07-07 CTZ6 (-108) and 2026-08-03 CTZ6
+(-8), BOTH cancelled-BLOCK cases. The other 12 are unaffected -- they are tape
+deficiencies or the open unexplained set, not cancellation.
+
+**Nothing moves (req 5):** the store's 5 CT sessions contain no cancelled
+non-EFS prints, so recomputing every sidecar row reproduces the written figures
+exactly (verified by recomputation, not assumed). Nothing re-emitted. The
+Bloomberg bar5m seed keeps 8,054 lots under `efs_delete` from the old map,
+unchanged until re-seeded.
+
+**CORRECTS THE PHASE 1 REPORT.** It used a substring test (`'Delete' in cond`)
+and so credited R11 with resolving 07-07 CTZ6 and part of 08-03 CTZ6. Both were
+cancelled BLOCKS the bucket-name rule never touched. Corrected in
+`SAME_DAY_VOLUME_CUTOVER.md`.
+
+**Suite: 115 passed** (24 new in `test_r11_keyed_on_the_tag.py`,
+sabotage-verified: reverting to the narrow rule turns 10 red). Two superseded
+assertions updated with the reason on record. Nothing committed.

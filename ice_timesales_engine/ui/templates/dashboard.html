@@ -458,7 +458,7 @@ function renderAB(A, B, pA, pB) {
 
 // Head-to-head stat row: each day's total + the signed difference.
 function renderABStats(A, B, wA, wB) {
-  var tA = wA.totals.all || 0, tB = wB.totals.all || 0;
+  var tA = wA.totals.clean || 0, tB = wB.totals.clean || 0;
   var d = tB - tA;
   var pct = tA ? (100 * d / tA) : 0;
   var col = d >= 0 ? '#15803d' : '#c0392b';
@@ -592,7 +592,7 @@ function renderTotals(w, priceInfo) {
 
   var traces = [{
     x: dates,
-    y: dates.map(function(d){ return pd[d].all; }),
+    y: dates.map(function(d){ return pd[d].clean; }),
     type: 'bar', name: 'Volume', marker: { color: '#c9a227' },
     hovertemplate: '%{x}<br>%{y:,.0f} lots<extra></extra>'
   }];
@@ -642,7 +642,7 @@ function renderDailyTable(dates, pd, series) {
   function px(v) { return v != null ? v.toFixed(2) : '—'; }
   tbl.querySelector('tbody').innerHTML = dates.map(function(d) {
     var row = series ? series[d] : null;
-    return '<tr><td>' + d + '</td><td>' + fmt(pd[d].all) + '</td>'
+    return '<tr><td>' + d + '</td><td>' + fmt(pd[d].clean) + '</td>'
       + '<td>' + (row ? row.generic_code : '—') + '</td>'
       + '<td>' + (row ? px(row.open) : '—') + '</td>'
       + '<td>' + (row ? px(row.high) : '—') + '</td>'
@@ -654,7 +654,7 @@ function renderDailyTable(dates, pd, series) {
 function renderStats(w) {
   var t = w.totals;
   el('stats').innerHTML =
-    '<div class="stat"><div class="lbl">Total (selected)</div><div class="val">'+fmt(t.all)+'</div></div>'
+    '<div class="stat"><div class="lbl">Total (selected)</div><div class="val">'+fmt(t.clean)+'</div></div>'
     + '<div class="stat"><div class="lbl">Outright</div><div class="val">'+fmt(t.by_type.outright)+'</div></div>'
     + '<div class="stat"><div class="lbl">Leg</div><div class="val">'+fmt(t.by_type.leg)+'</div></div>'
     + '<div class="stat"><div class="lbl">EFS + EFP</div><div class="val">'
@@ -675,7 +675,7 @@ function windowStat(w) {
   var clock = w.window.start.slice(11,16) + ' → ' + w.window.end.slice(11,16);
   return '<div class="stat"><div class="lbl">Sessions</div><div class="val">' + n + '</div></div>'
     + '<div class="stat"><div class="lbl">Avg / session</div><div class="val">'
-      + fmt((w.totals.all || 0) / n) + '</div></div>'
+      + fmt((w.totals.clean || 0) / n) + '</div></div>'
     + '<div class="stat"><div class="lbl">Window (each session)</div>'
       + '<div class="val" style="font-size:15px">' + clock + '</div></div>'
     + '<div class="stat"><div class="lbl">Range</div><div class="val" style="font-size:15px">'
@@ -683,7 +683,12 @@ function windowStat(w) {
 }
 
 function renderTables(w) {
-  var t = w.totals, total = t.all || 1;
+  // R11 denominators. These two tables need DIFFERENT bases, deliberately:
+  //   by_contract rows are clean volume  -> clean base, shares sum to 100%.
+  //   by_type rows include the efs_delete bucket itself (it is listed so
+  //     cancelled volume stays visible) -> all-in base, or a cancelled row
+  //     would be measured against a total that excludes it.
+  var t = w.totals, total = t.clean || 1, totalAll = t.all || 1;
   // A-vs-B rewrites these headers to A | B | delta -- restore them, otherwise
   // switching back to any other view leaves stale 4-col comparison headers.
   el('tbl-contract').querySelector('thead').innerHTML =
@@ -699,8 +704,10 @@ function renderTables(w) {
     .filter(function(kv){ return kv[1] > 0; })
     .sort(function(a,b){ return b[1]-a[1]; });
   el('tbl-type').querySelector('tbody').innerHTML = tb.map(function(kv) {
-    return '<tr><td>'+kv[0]+'</td><td>'+fmt(kv[1])+'</td><td>'
-      + (100*kv[1]/total).toFixed(1) + '%</td></tr>';
+    var cancelled = (kv[0] === 'efs_delete');
+    return '<tr><td>'+kv[0] + (cancelled ? ' (cancelled, excluded)' : '')
+      + '</td><td>'+fmt(kv[1])+'</td><td>'
+      + (100*kv[1]/totalAll).toFixed(1) + '%</td></tr>';
   }).join('');
 }
 
@@ -754,7 +761,7 @@ function _pngSeries() {
   if (L.view === 'totals') {
     var pd = L.w.per_date || {}, dts = Object.keys(pd).sort();
     var out = { kind:'bars', xLabels: dts,
-      series: [{ name:'Volume', color:PNG.gold, values: dts.map(function(d){ return pd[d].all; }) }] };
+      series: [{ name:'Volume', color:PNG.gold, values: dts.map(function(d){ return pd[d].clean; }) }] };
     // Price overlay -- own scale (secondary), NEVER folded into the volume
     // bars' max/min. A missing settle stays null (a real gap on the line),
     // never fabricated or interpolated.
@@ -807,7 +814,7 @@ function _pngStats() {
   // Same numbers as the on-screen stat tiles -- {label, value, color}[].
   var L = _LAST;
   if (L.view === 'ab') {
-    var tA = L.wA.totals.all||0, tB = L.wB.totals.all||0, d = tB-tA;
+    var tA = L.wA.totals.clean||0, tB = L.wB.totals.clean||0, d = tB-tA;
     var col = d>=0 ? PNG.green : PNG.red, sign = d>=0 ? '+' : '';
     return [
       {label:'A · '+L.A, value: fmt(tA)}, {label:'B · '+L.B, value: fmt(tB)},
@@ -817,7 +824,7 @@ function _pngStats() {
   }
   var t = L.w.totals;
   var tiles = [
-    {label:'Total (selected)', value: fmt(t.all)},
+    {label:'Total (selected)', value: fmt(t.clean)},
     {label:'Outright', value: fmt(t.by_type.outright)},
     {label:'Leg', value: fmt(t.by_type.leg)},
     {label:'EFS + EFP', value: fmt((t.by_type.efs||0)+(t.by_type.efp||0))}
@@ -825,7 +832,7 @@ function _pngStats() {
   var n = (L.w.dates||[]).length;
   if (n > 1) {
     tiles.push({label:'Sessions', value: String(n)});
-    tiles.push({label:'Avg / session', value: fmt((t.all||0)/n)});
+    tiles.push({label:'Avg / session', value: fmt((t.clean||0)/n)});
   }
   var win = _pngWindow(L.w);
   if (win) { tiles.push({label: n > 1 ? 'Window (each session)' : 'Window', value: win}); }

@@ -24,6 +24,8 @@ Unknown codes fall to 'other' and are surfaced by the caller for logging --
 never silently absorbed into outright.
 """
 
+from ingest import classifier
+
 # codes that are pure outright annotations (aggressor/off-book markers)
 _OUTRIGHT_OK = {'NDOO', 'NDOT', 'RFC'}
 
@@ -34,7 +36,24 @@ def map_bbg_conditions(cc: str) -> str:
         return 'outright'
     parts = {p.strip() for p in cc.split(',') if p.strip()}
     if '*X' in parts:
-        return 'efs_delete'
+        # '*X' is Bloomberg's CANCEL marker, the analogue of ICE's Delete tag.
+        # Mirrors the widened ICE ladder [2026-08-24]: resolve what the print
+        # otherwise is, then take its cancelled twin, so a cancelled block maps
+        # to block_delete instead of being mislabelled an EFS bust.
+        #
+        # BARE '*X' STAYS 'efs_delete' -- deliberately, on evidence. The 07-02
+        # reconciliation verified '*X' against the ICE tape at 99 == 99 lots,
+        # all EFS busts, and bar5m stores no raw conditionCodes, so nothing on
+        # disk can tell us what a bare '*X' was. Mapping it to outright_delete
+        # would be an inference, not a measurement, and would silently reclassify
+        # the 7,955 seeded efs_delete lots on any future re-seed. Both readings
+        # are excluded from clean totals either way, so the safe choice is the
+        # verified one.
+        others = parts - {'*X'}
+        if not others:
+            return 'efs_delete'
+        return classifier.cancelled_type_for(
+            map_bbg_conditions(','.join(sorted(others))))
     if parts == {'P'}:
         return 'efp'
     if 'EFS' in parts:

@@ -18,6 +18,7 @@ from pathlib import Path
 
 from store.db import Db, now_iso
 
+from .classifier import excluded_sql
 from .normalize import normalize_contract
 
 # Gap above this share of settle volume is flagged suspect. The verified 07-02
@@ -26,33 +27,79 @@ from .normalize import normalize_contract
 SUSPECT_GAP_PCT = 0.50
 
 
-def _read_settle_volumes(settle_path: Path, commodity: str) -> dict:
-    """{ice_code: settle_volume} from futures_settle_<date>.csv (header
-    verified: Date,Contract,...,Volume,OpenInt)."""
+def _read_settle_volumes(settle_path: Path, commodity: str) -> tuple:
+    """({ice_code: volume}, vintage) from futures_settle_<date>.csv.
+
+    SAME-DAY WHEN AVAILABLE. Two columns can carry volume:
+
+      CumVolume  the session's own total, from ICE 'Cumulative Volume'. Written
+                 by the capture from the 2026-08-24 cutover onward. SAME-DAY.
+      Volume     from ICE 'Volume', which returns a flat 0.0 on ICE futures
+                 symbols; what actually lands is the PRIOR session's figure.
+                 Measured over 36 CT sessions: 165 contract-days match the D-1
+                 blotter sum exactly, 5 match same-day.
+
+    Prefer CumVolume; fall back to Volume for the 369 pre-cutover files so
+    history stays readable. The returned vintage says which was used, so a
+    caller never has to guess whether it is comparing like with like. See
+    SAME_DAY_VOLUME_CUTOVER.md in the ICE eod records repo."""
     out = {}
+    used_cum = used_legacy = 0
     with open(settle_path, 'r', newline='', encoding='utf-8') as fh:
         for row in csv.DictReader(fh):
             try:
                 ice = normalize_contract(row['Contract'])
-                vol = float(row['Volume']) if row.get('Volume') not in (None, '') else None
+                if row.get('CumVolume') not in (None, ''):
+                    vol = float(row['CumVolume'])
+                    used_cum += 1
+                elif row.get('Volume') not in (None, ''):
+                    vol = float(row['Volume'])
+                    used_legacy += 1
+                else:
+                    vol = None
             except (KeyError, TypeError, ValueError) as exc:
                 print(f'WARNING: bad settle row {row!r}: {exc}', file=sys.stderr)
                 continue
             if vol is not None:
                 out[ice] = vol
-    return out
+    if used_cum and not used_legacy:
+        vintage = 'same_day'
+    elif used_legacy and not used_cum:
+        vintage = 'prior_session'
+    elif used_cum or used_legacy:
+        vintage = 'mixed'
+    else:
+        vintage = 'none'
+    return out, vintage
 
 
 def build_reconcile(db: Db, commodity: str, session_date: str,
                     settle_path) -> int:
     cmd = commodity.upper()
-    tape = dict(db.q("""
-        SELECT ice_code, SUM(size) FROM ticks
-        WHERE commodity=%s AND session_date=%s GROUP BY ice_code
-    """, (cmd, session_date)))
-    settle = {}
+    # R11: cancelled flow never counts, so the tape side of this comparison is
+    # CLEAN. ICE excludes busted prints from official volume too, so counting
+    # them here produced a tape total that could exceed settle and trip a
+    # false 'suspect_capture'. Rule owned by classifier.EXCLUDED_FROM_CLEAN.
+    #
+    # VINTAGE: both sides of this comparison are now SAME-DAY whenever the
+    # settle file carries CumVolume (captures from the 2026-08-24 cutover on).
+    # Pre-cutover files have only the legacy Volume column, which holds the
+    # PRIOR session's figure -- for those the comparison is still skewed by one
+    # session, and _read_settle_volumes reports vintage='prior_session' so the
+    # skew is visible rather than assumed away. Do NOT shift dates to
+    # compensate: the vintage flag is the honest signal.
+    ex, exp = excluded_sql()
+    tape = dict(db.q(
+        'SELECT ice_code, SUM(size) FROM ticks'
+        ' WHERE commodity=%s AND session_date=%s' + ex + ' GROUP BY ice_code',
+        [cmd, session_date] + exp))
+    settle, vintage = {}, 'none'
     if settle_path is not None and Path(settle_path).is_file():
-        settle = _read_settle_volumes(Path(settle_path), cmd)
+        settle, vintage = _read_settle_volumes(Path(settle_path), cmd)
+    if vintage == 'prior_session':
+        print(f'NOTE: {cmd} {session_date} settle volume is PRIOR-SESSION '
+              '(pre-cutover file, no CumVolume column) -- reconcile deltas '
+              'carry a one-session skew.', file=sys.stderr)
 
     db.exec('DELETE FROM reconcile_flags WHERE commodity=%s AND session_date=%s',
             (cmd, session_date))
