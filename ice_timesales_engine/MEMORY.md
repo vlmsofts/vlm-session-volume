@@ -507,3 +507,63 @@ cancelled BLOCKS the bucket-name rule never touched. Corrected in
 **Suite: 115 passed** (24 new in `test_r11_keyed_on_the_tag.py`,
 sabotage-verified: reverting to the narrow rule turns 10 red). Two superseded
 assertions updated with the reason on record. Nothing committed.
+
+---
+
+## 2026-08-24 -- SAME-DAY INGEST: 15:00 primary added, 17:10 kept as backstop
+
+**STATUS: BUILT, PARTIALLY PROVEN LIVE.** The batch ran live by hand (exit 0,
+all 4 commodities, zero rows added). The 15:00 TASK HAS NOT YET FIRED ON ITS
+OWN -- the first live 15:00 run is what proves it. Full detail:
+`RUNBOOK_INGEST.md`.
+
+**Corrected a premise before acting.** The order stated nothing schedules
+jobs.daily_ingest. It IS scheduled and working: `VLM ICE Timesales Engine -
+Daily Ingest` has run daily at 17:10 since 2026-07-06 with zero missed runs,
+writing all 4 commodities to Supabase (verified by EFFECT -- Supabase current
+through 2026-08-21 with per-file sha256 rows -- not by the exit code, since the
+batch wrote no log). The T+1 was the 17:10 timing alone, which Lou confirmed.
+
+**Decided: 15:00 primary + 17:10 backstop.** Both run the same batch. 15:00
+clears the 14:22-14:25 blotter and the ~14:41 futures settle with margin and
+lands the session ~2h10m earlier. 17:10 keeps its ~2h45m margin for late or
+recovered captures.
+
+**REJECTED: an event watcher on the pulse's completion commit.** ~35 min
+earlier than 15:00, not worth a new resident process; a clock task with a
+backstop has no daemon to die silently. Parked, not rejected outright.
+
+**Contention gate cleared BEFORE registering.** 15:00 sits inside the
+13:35-15:30 ICE contention window, so this was the blocking question. Verified
+across all 19 repo modules daily_ingest imports: NO win32com, NO pythoncom, NO
+Dispatch, NO ice.get_*. File-only. The one network call is a Cloudflare purge,
+unconfigured on this box (immediate no-op), timeout-capped and exception-
+guarded when configured. Costs the shared ICE COM session nothing.
+
+**Two real defects found and fixed in the batch.** It wrote NO log despite its
+own comment saying to check one, and ended `exit /b 0` unconditionally -- a
+commodity could fail every day while Task Scheduler reported success. Now:
+per-commodity [ OK ]/[FAIL], full output to `logs/run_daily_ingest_all.log`,
+and a real exit 1 naming the failures. All three paths TESTED, including a
+sabotaged copy forcing every commodity to fail (exit 1, each named). Two cmd
+parser traps were caught by that testing: an unescaped `(` in a log argument
+broke the block and returned 255 instead of 1, and empty `echo` printed
+"ECHO is off." -- both fixed.
+
+**Added `is_trading_day.py` to this repo.** daily_ingest DOES guard holidays but
+tests the SESSION date, not TODAY, and with --date omitted takes the latest
+day-folder -- so a Saturday run would re-process Friday. Deliberately a separate
+thin copy rather than importing from the capture repo: one calendar
+(config.CLOSED_DATES), two callers, no cross-repo path dependency.
+
+**Idempotency proven on a real day, not re-derived:** re-running all 4
+commodities added ZERO rows (CT 1155932, KC 2000476, SB 3082497, CC 1900124
+unchanged). sha256 skip + ON CONFLICT DO NOTHING + delete-and-reinsert aggregates.
+
+**MEASURED and recorded, correcting the order's ~15:32 figure:** settled_surface
+lands anywhere from 14:59 to 17:09 (08-18 14:59, 08-17 15:14, 08-20/21 15:32,
+08-19 17:09). So the 15:00 run is FUTURES-COMPLETE and OPTIONS-PARTIAL, and
+"~15:32" must not be relied on. Futures volume -- all this ingest computes -- is
+unaffected; the pipeline never reads a surface.
+
+**Suite: 115 passed.** Nothing committed.
