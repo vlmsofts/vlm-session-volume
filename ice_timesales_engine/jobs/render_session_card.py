@@ -171,25 +171,36 @@ def build(commodity, session_date, ice_code, out_dir):
         ha='right')
     stage = 'FINAL' if comp['verdict'] in ('OK', 'FLAG') else 'PROVISIONAL'
     txt(94, 92.8, stage, 10, GOLD, 'bold', ha='right')
-    rule(86.5)
+
+    # ---- completeness, as PROVENANCE ------------------------------------
+    # Directly under the session block and ABOVE the total, deliberately. It
+    # answers "can I trust this number", and a reader who has already read the
+    # numbers has answered that for themselves before reaching a footnote. On a
+    # FLAG day it must be seen BEFORE the total: that is the whole point.
+    vcol = {'OK': GREEN, 'FLAG': RED}.get(comp['verdict'], MUTED)
+    txt(6, 84.4, 'COMPLETENESS', 9, MUTED, 'bold')
+    txt(23, 84.2, comp['verdict'], 10.5, vcol, 'bold')
+    note = comp['note']
+    if len(note) > 92:
+        cut = note.rfind(' ', 0, 92)
+        txt(40, 84.4, note[:cut], 8.4, MUTED)
+        txt(40, 82.3, note[cut + 1:][:100], 8.4, MUTED)
+    else:
+        txt(40, 84.4, note, 8.4, MUTED)
+    rule(79.5)
 
     # ---- headline -------------------------------------------------------
-    txt(6, 84, 'TAPE VOLUME', 10, MUTED, 'bold')
-    txt(6, 79.5, _fmt(tape_total), 30, INK, 'bold')
-    txt(6, 70.5,
-        'Tape volume from the ICE time and sales blotter. This is not total '
-        'exchange volume: TAS and TIC are a separate ICE product and do not '
-        'appear on this tape,', 8.6, MUTED)
-    txt(6, 68.2, 'and any block not captured is also absent. Compare with an '
-                 'exchange figure only on that understanding.', 8.6, MUTED)
-    rule(65.5)
+    txt(6, 77, 'VOLUME', 10, MUTED, 'bold')
+    txt(6, 72.5, _fmt(tape_total), 30, INK, 'bold')
+    txt(6, 64.0, 'ICE tick tape, excludes TAS and TIC.', 9, MUTED)
+    rule(60.0)
 
     # ---- aggressor ------------------------------------------------------
-    txt(6, 63, 'AGGRESSOR', 10, MUTED, 'bold')
-    txt(6, 59.8, f'Base {_fmt(agg["base_lots"])} lots. Aggressor tagged '
+    txt(6, 57.5, 'AGGRESSOR', 10, MUTED, 'bold')
+    txt(6, 54.3, f'Base {_fmt(agg["base_lots"])} lots. Aggressor tagged '
                  f'outrights only: EFS, EFP, cancelled, spread legs and '
                  f'unstamped fills are all excluded.', 8.6, MUTED)
-    y = 55.5
+    y = 50.0
     txt(6, y, 'Side', 9, MUTED, 'bold')
     txt(26, y, 'Lots', 9, MUTED, 'bold', ha='right')
     txt(38, y, 'Share', 9, MUTED, 'bold', ha='right')
@@ -206,8 +217,8 @@ def build(commodity, session_date, ice_code, out_dir):
         y -= 3.4
 
     # night / day, the flip a daily bar hides
-    txt(58, 55.5, 'By window', 9, MUTED, 'bold')
-    yy = 52.1
+    txt(58, 50.0, 'By window', 9, MUTED, 'bold')
+    yy = 46.6
     for w in ('night', 'day'):
         if w in nd and nd[w]['base_lots']:
             x = nd[w]
@@ -215,14 +226,14 @@ def build(commodity, session_date, ice_code, out_dir):
             txt(58, yy, f'{name}: {x["buy_pct"]:.1f}% buy, '
                         f'{x["sell_pct"]:.1f}% sell', 9.5, INK)
             yy -= 3.2
-    rule(44)
+    rule(38.5)
 
     # ---- trade types ----------------------------------------------------
-    txt(6, 41.5, 'TRADE TYPES', 10, MUTED, 'bold')
-    txt(26, 38.6, 'Lots', 9, MUTED, 'bold', ha='right')
-    txt(38, 38.6, 'Share', 9, MUTED, 'bold', ha='right')
-    txt(50, 38.6, 'Prints', 9, MUTED, 'bold', ha='right')
-    y = 35.0
+    txt(6, 36.0, 'TRADE TYPES', 10, MUTED, 'bold')
+    txt(26, 33.1, 'Lots', 9, MUTED, 'bold', ha='right')
+    txt(38, 33.1, 'Share', 9, MUTED, 'bold', ha='right')
+    txt(50, 33.1, 'Prints', 9, MUTED, 'bold', ha='right')
+    y = 29.5
     order = sorted(types.items(), key=lambda kv: -kv[1]['lots'])
     names = {'outright': 'Outright', 'spread_leg': 'Spread legs',
              'option_hedge': 'Option hedges', 'efs': 'EFS', 'efp': 'EFP',
@@ -238,40 +249,35 @@ def build(commodity, session_date, ice_code, out_dir):
         txt(50, y, _fmt(v['prints']), 9.6, MUTED, ha='right')
         y -= 3.2
 
-    txt(58, 41.5, 'How the leg split is defined', 9, MUTED, 'bold')
-    txt(58, 38.4, 'A spread leg is a leg print with a same second, same size '
+    txt(58, 36.0, 'How the leg split is defined', 9, MUTED, 'bold')
+    txt(58, 32.9, 'A spread leg is a leg print with a same second, same size '
                   'leg', 8.4, MUTED)
-    txt(58, 36.2, 'partner on another contract in the same commodity. An '
+    txt(58, 30.7, 'partner on another contract in the same commodity. An '
                   'option', 8.4, MUTED)
-    txt(58, 34.0, 'hedge is a leg print without one.', 8.4, MUTED)
+    txt(58, 28.5, 'hedge is a leg print without one.', 8.4, MUTED)
 
     # ---- blanks ---------------------------------------------------------
-    txt(58, 29.5, 'Unstamped fills', 9, MUTED, 'bold')
-    txt(58, 26.3, f'{_fmt(blanks["lots"])} lots across '
+    txt(58, 24.0, 'Unstamped fills', 9, MUTED, 'bold')
+    txt(58, 20.8, f'{_fmt(blanks["lots"])} lots across '
                   f'{_fmt(blanks["prints"])} prints carry no aggressor stamp.',
         8.4, MUTED)
-    txt(58, 24.1, 'The evidence is that these are implied calendar spread '
+    txt(58, 18.6, 'The evidence is that these are implied calendar spread '
                   'fills.', 8.4, MUTED)
-    txt(58, 21.9, 'They are included in the tape volume above and excluded '
+    txt(58, 16.4, 'They are included in the tape volume above and excluded '
                   'from', 8.4, MUTED)
-    txt(58, 19.7, 'the aggressor base. No side is assigned to them.',
+    txt(58, 14.2, 'the aggressor base. No side is assigned to them.',
         8.4, MUTED)
-    rule(15.5)
+    rule(11.5)
 
-    # ---- completeness ---------------------------------------------------
-    vcol = {'OK': GREEN, 'FLAG': RED}.get(comp['verdict'], MUTED)
-    txt(6, 13, 'COMPLETENESS', 10, MUTED, 'bold')
-    txt(6, 9.6, comp['verdict'], 13, vcol, 'bold')
-    note = comp['note']
-    if len(note) > 78:
-        cut = note.rfind(' ', 0, 78)
-        txt(30, 9.9, note[:cut], 8.8, MUTED)
-        txt(30, 7.7, note[cut + 1:][:88], 8.8, MUTED)
-    else:
-        txt(30, 9.9, note, 8.8, MUTED)
-    txt(6, 4.6, 'Tape total compared with the exchange settle volume per '
-                'contract, cancelled prints excluded from both.', 8.2, MUTED)
-    txt(94, 4.6, 'VLM Commodities', 8.6, MUTED, ha='right')
+    # ---- footer ---------------------------------------------------------
+    # The completeness VERDICT now sits at the top, as provenance. This line
+    # states the METHOD behind it, which belongs in the footer.
+    txt(6, 8.6, 'Completeness compares the tape total with the exchange '
+                'settle volume per contract, cancelled prints excluded from '
+                'both.', 8.2, MUTED)
+    txt(6, 6.4, 'Every figure is reproducible from the session store.',
+        8.2, MUTED)
+    txt(94, 8.6, 'VLM Commodities', 8.6, MUTED, ha='right')
 
     os.makedirs(out_dir, exist_ok=True)
     fn = (f'{commodity.upper()}_{ice_code}_{session_date}_'
