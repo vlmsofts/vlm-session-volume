@@ -567,3 +567,128 @@ lands anywhere from 14:59 to 17:09 (08-18 14:59, 08-17 15:14, 08-20/21 15:32,
 unaffected; the pipeline never reads a surface.
 
 **Suite: 115 passed.** Nothing committed.
+
+---
+
+## 2026-08-24 -- AGGRESSOR SIDE IN THE ARCHIVE (vendored, three-state)
+
+**STATUS: BUILT, UNPROVEN LIVE.** No real session has yet written side rows to
+Supabase, and the live minute_agg/bar5m tables do NOT yet have the column -- see
+"migration still owed" below.
+
+**STEP 0 finding, which overturned an assumption.** The analyzer's
+`outright_flow.aggressor_side()` returns FOUR states, not two or three:
+BUY / SELL / UNK / CROSS. It is a PURE token-to-side map -- no ruling,
+hierarchy or vol-tell behaviour, so there was no ruling layer to strip. It
+takes a RAW Conditions STRING (substring `in` tests), not a token set, unlike
+this engine's classifier which works on a frozenset.
+
+**Decided: three states, one unsided bucket.** buy / sell / unsided.
+CROSS collapses to unsided because RFCCross marks a BROKER-EXECUTED CROSS --
+an execution mechanism, not a side. A cross has a buyer and a seller; the
+aggressor is obscured because the broker held both sides. So CROSS is a REASON
+for unsided, never a fourth side. REJECTED (Lou, addendum 2) a second unsided
+bucket or a 'crossed' state: rare-instance, not worth the plumbing. An
+unrecognised token FLAGS via `aggressor.unexpected_tokens()` instead.
+
+**MEASURED, not assumed:** RFCCross is absent from all 375 CT futures blotter
+files. The complete futures Conditions vocabulary is 7 tokens forming 12
+strings (Leg 616,984 / SetByBid 607,235 / SetByAsk 600,223 / blank 365,887 /
+EFS 263 / EFP 209 / BlockTrde,Leg 118 / five Delete variants). RFCCross is an
+OPTIONS-tape token; this engine reads futures.
+
+**Q2 ruling applied: aggressor.py CONSUMES classifier.outright_side()** rather
+than re-testing the tokens. The TOKEN test lives in classifier, the
+TAG-TO-SIDE map lives in aggressor. One home each, no duplicated matching --
+which is what the no-second-copy guard protects.
+
+**Vendored copy, not a cross-repo import** (same shape as is_trading_day.py):
+an import would make the engine unrunnable without the analyzer, breaking the
+Railway deployment. `tests/test_aggressor_matches_analyzer.py` is the
+mechanical drift guard -- it loads the analyzer's function BY FILE PATH (not as
+a package, which would drag in pipeline.ice_attribute and fail outside that
+repo) and SKIPS LOUDLY when absent. Proven: 17 skipped / 0 failed with the
+analyzer missing.
+
+**side is ADDITIVE.** primary_type is untouched -- outright is still ONE
+primary_type, not three. side joined the PK of minute_agg and bar5m. Only live
+outrights carry a real side; leg/efs/efp/block and every cancelled type are
+'unsided' by construction, ASSERTED not assumed. The Bloomberg bar5m seed
+writes 'unsided' throughout: its conditionCodes carry no aggressor stamp, so a
+side there would be invented rather than measured.
+
+**Sabotage, both directions, both proven:**
+  * inverting the map -> 3 tests red in the local suite, 4 red in the
+    cross-repo guard; green on restore.
+  * the no-second-copy guard FAILED ITS FIRST SABOTAGE -- a single-line regex
+    missed the realistic multi-line `if 'SetByBid' in cond: return 'buy'`
+    shape. Widened to a multi-line window with comment lines blanked; now
+    catches it naming store/repository.py:57, green on restore. A guard that
+    cannot go red is not a guard.
+
+**Existing callers unchanged, proven:** no query in repository.py or
+routes_query.py references `side`, and all 159 tests pass with side in the key.
+
+**Schema trap hit and fixed:** a semicolon inside my new schema.sql COMMENT
+split the DDL mid-statement (db.init_schema splits on ';'), producing 39
+errors. The file header warns about exactly this. Fixed; splitter re-verified.
+
+**REBUILD COST, MEASURED** on CT 2026-08-21 (27,665 ticks) against a local
+sqlite copy: minute_agg 5,223 rows in 0.12s, bar5m 2,222 rows in 0.02s =
+0.14s per commodity-day. 265 commodity-days -> ~0.6 min single-threaded
+locally; Supabase round-trips will dominate in production. ticks is permanent
+and keeps conditions_raw, so side is always re-derivable and nothing is lost.
+
+Real-day sanity (CT 2026-08-21 outrights): buy 11,869 / sell 12,297 /
+unsided 4,036, summing exactly to the 28,202 outright total.
+
+**MIGRATION STILL OWED (not done, flagged):** `db.init_schema()` is
+CREATE TABLE IF NOT EXISTS, so it will NOT add the column to the LIVE Supabase
+minute_agg/bar5m, which currently lack it. A live ingest would fail on the new
+INSERT until an ALTER TABLE runs. Needs a ruling on ALTER-plus-backfill vs
+rebuild.
+
+**Item 5 (volume-at-price endpoint) NOT built** -- separate piece, deliberately
+not started so the archive change lands clean.
+
+**Suite: 159 passed.** Nothing committed.
+
+### 2026-08-24 (same day) -- side MIGRATION EXECUTED on Supabase
+
+**Ruling (b): ALTER + FULL REBUILD.** Rejected (a) ALTER-plus-default because
+'unsided' would then mean two things -- genuinely no aggressor stamp, or row
+predates the column -- with no way to tell them apart afterward. Same
+bucket-holds-two-animals defect as Leg and outright.
+
+**BLOCKED FIRST, and stopping was correct.** The ALTER failed twice at the 2min
+statement_timeout. ADD COLUMN with a NOT NULL DEFAULT is catalog-only in modern
+Postgres and should take milliseconds, so 120s meant WAITING, not working. Cause:
+pid 329945, idle in transaction for 1h50m, holding AccessShareLock on both
+tables. Filed as DEFECT_IDLE_IN_TRANSACTION.md -- root cause is api/_db()
+returning one long-lived connection with NO commit/rollback/close on any read
+path (grep-verified, zero matches), so every SELECT leaves a transaction open.
+NOT FIXED, deliberately: one session, one concern.
+
+**Executed after pre-checks:** confirmed still idle-in-transaction, still the
+freshness read, and the ONLY conflicting lock holder. Terminated, then ALTERed
+with lock_timeout=5s so a new blocker would fail fast rather than queue (a
+waiting ALTER blocks everything behind it). minute_agg 5.4s, bar5m 8.1s.
+
+**Rebuild: 265/265 commodity-days, zero failures, 10.3 min (2.33s each).** The
+local estimate was 0.14s/day; Supabase round-trips dominate as flagged.
+
+**VERIFIED, all pass:**
+  * no side value outside the 3 states, either table
+  * 551,506 minute_agg outright rows carry a REAL derived side
+  * 0 non-outright rows carry a side
+  * conservation buy+sell+unsided == outright total: 265/265 commodity-days
+  * bloomberg seed 189,260 rows / 10,162,374 lots ALL unsided, as designed
+  * CT 2026-08-21 spot check exact: 11,869 / 12,297 / 4,036
+  * vs the pre-migration snapshot, ZERO primary_type totals moved -- the
+    rebuild changed the KEY, never the VOLUME
+
+**Live ingest confirmed against the migrated schema** before the scheduled
+runs: single-commodity and the full 4-commodity batch both exit 0, and
+verification stays green afterward.
+
+Suite: 159 passed.

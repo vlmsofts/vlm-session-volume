@@ -39,15 +39,17 @@ def rollup_ice_bar5m(db: Db, commodity: str, session_date: str) -> int:
     """minute_agg -> bar5m rows (source='ice') for one day. Returns rows."""
     cmd = commodity.upper()
     rows = db.q("""
-        SELECT ice_code, generic_code, minute_ts, primary_type,
+        SELECT ice_code, generic_code, minute_ts, primary_type, side,
                sum_size, trade_count
         FROM minute_agg WHERE commodity=%s AND session_date=%s
     """, (cmd, session_date))
 
     agg = defaultdict(lambda: [0.0, 0])
     generic_of = {}
-    for ice, generic, minute_ts, ptype, s, n in rows:
-        key = (ice, floor_5m(minute_ts), ptype)
+    for ice, generic, minute_ts, ptype, side, s, n in rows:
+        # side rides through from minute_agg unchanged -- this rollup only
+        # coarsens the time grain, it never re-derives a side.
+        key = (ice, floor_5m(minute_ts), ptype, side)
         agg[key][0] += s
         agg[key][1] += n
         generic_of[ice] = generic
@@ -57,12 +59,12 @@ def rollup_ice_bar5m(db: Db, commodity: str, session_date: str) -> int:
     db.execmany("""
         INSERT INTO bar5m (source, commodity, session_date, ice_code,
                            generic_code, bucket_ts, window_preset,
-                           primary_type, sum_size, trade_count)
-        VALUES ('ice',%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                           primary_type, side, sum_size, trade_count)
+        VALUES ('ice',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
     """, [
         (cmd, session_date, ice, generic_of[ice], bts,
-         bucket_window(bts, session_date), ptype, s, n)
-        for (ice, bts, ptype), (s, n) in agg.items()
+         bucket_window(bts, session_date), ptype, side, s, n)
+        for (ice, bts, ptype, side), (s, n) in agg.items()
     ])
     db.commit()
     return len(agg)
@@ -71,7 +73,12 @@ def rollup_ice_bar5m(db: Db, commodity: str, session_date: str) -> int:
 def replace_bloomberg_day(db: Db, commodity: str, session_date: str,
                           ice_code: str, generic_code, buckets: dict) -> int:
     """Write one (day, contract) of seeded buckets.
-    buckets: {(bucket_ts, primary_type): (sum_size, trade_count)}."""
+    buckets: {(bucket_ts, primary_type): (sum_size, trade_count)}.
+
+    side is written as 'unsided' throughout, deliberately: Bloomberg's
+    conditionCodes carry no aggressor stamp, so any side here would be
+    invented rather than measured. The seed is complete on VOLUME, silent on
+    side -- and silent is the honest answer."""
     cmd = commodity.upper()
     db.exec("""
         DELETE FROM bar5m WHERE source='bloomberg' AND commodity=%s
@@ -80,8 +87,8 @@ def replace_bloomberg_day(db: Db, commodity: str, session_date: str,
     db.execmany("""
         INSERT INTO bar5m (source, commodity, session_date, ice_code,
                            generic_code, bucket_ts, window_preset,
-                           primary_type, sum_size, trade_count)
-        VALUES ('bloomberg',%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                           primary_type, side, sum_size, trade_count)
+        VALUES ('bloomberg',%s,%s,%s,%s,%s,%s,%s,'unsided',%s,%s)
     """, [
         (cmd, session_date, ice_code, generic_code, bts,
          bucket_window(bts, session_date), ptype, s, n)

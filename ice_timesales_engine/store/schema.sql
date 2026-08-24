@@ -34,9 +34,15 @@ CREATE TABLE IF NOT EXISTS minute_agg (
   generic_code TEXT,
   minute_ts    TEXT NOT NULL,            -- ISO naive ET truncated to minute
   primary_type TEXT NOT NULL,
+  -- ADDITIVE second axis [2026-08-24]: aggressor side, NOT a replacement for
+  -- primary_type. 'buy' | 'sell' | 'unsided'. Only live outrights carry a real
+  -- side. leg/efs/efp/block and every cancelled type are 'unsided' by
+  -- construction (no aggressor stamp). SetByBid=BUY, SetByAsk=SELL -- ICE
+  -- ticket 0903465452, see ingest/aggressor.py before touching this.
+  side         TEXT NOT NULL DEFAULT 'unsided',
   sum_size     DOUBLE PRECISION NOT NULL,
   trade_count  INTEGER NOT NULL,
-  PRIMARY KEY (commodity, session_date, ice_code, minute_ts, primary_type)
+  PRIMARY KEY (commodity, session_date, ice_code, minute_ts, primary_type, side)
 );
 CREATE INDEX IF NOT EXISTS ix_minute_cmd_time ON minute_agg (commodity, minute_ts);
 CREATE INDEX IF NOT EXISTS ix_minute_cmd_date ON minute_agg (commodity, session_date, ice_code);
@@ -85,9 +91,13 @@ CREATE TABLE IF NOT EXISTS bar5m (
   bucket_ts     TEXT NOT NULL,           -- ISO naive ET floored to 5 min
   window_preset TEXT NOT NULL,           -- night | day | other
   primary_type  TEXT NOT NULL,
+  -- ADDITIVE second axis [2026-08-24] -- see the minute_agg note above.
+  -- The bloomberg seed writes 'unsided' throughout: its conditionCodes carry
+  -- no aggressor stamp, so a side would be invented, not measured.
+  side          TEXT NOT NULL DEFAULT 'unsided',
   sum_size      DOUBLE PRECISION NOT NULL,
   trade_count   INTEGER NOT NULL,
-  PRIMARY KEY (source, commodity, session_date, ice_code, bucket_ts, primary_type)
+  PRIMARY KEY (source, commodity, session_date, ice_code, bucket_ts, primary_type, side)
 );
 CREATE INDEX IF NOT EXISTS ix_bar5m_cmd_date ON bar5m (commodity, session_date, source);
 CREATE INDEX IF NOT EXISTS ix_bar5m_cmd_ts   ON bar5m (commodity, bucket_ts);
