@@ -9,6 +9,11 @@ __pycache__/
 # ── Runtime logs ──
 logs/
 
+# Generated session cards. Point-in-time artifacts, not source: one session
+# can produce several (provisional then final), and they are reproducible from
+# the store at any time.
+renders/
+
 # ── Editor / OS scratch ──
 *.bak
 *.tmp

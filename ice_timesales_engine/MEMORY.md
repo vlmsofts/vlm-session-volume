@@ -741,3 +741,68 @@ a server-level decision.
 
 Suite: 165 passed (6 new, sabotage-verified: removing read_only=True from
 api/app.py turns test_create_app_builds_a_read_only_db red).
+
+---
+
+## 2026-08-24 -- SAME-DAY SESSION CARD: honest basis, leg split, blanks ruling
+
+**STATUS: BUILT, UNPROVEN LIVE until Lou has looked at the PNG.**
+
+**Item 5 cost gate answered BEFORE building.** First attempt used a LEFT JOIN:
+5.84s AND WRONG (10,785 "paired" on Z26 vs a true 1,055). A join counts
+row-PAIRS -- one print matching ten same-second prints counts ten times. The
+question is per-PRINT, which is EXISTS: 0.32s for the same session, 18x faster
+and correct. Recorded in a comment in session_render.py so nobody reaches for a
+join again.
+
+**Definition D shipped (Lou's ruling):** a SPREAD LEG is a leg print with a
+same-second, SAME-SIZE leg partner on another contract in the same commodity;
+an OPTION HEDGE is a leg print without one. Ship the definition the proof rests
+on -- the evidence that paired legs are spread legs is size-matched pairs
+pricing inside the published spread day range, 400 of 400.
+
+**The 1,033/57 figures were WITHDRAWN, not reproduced.** They came from a hand
+count that aggregated by SECOND rather than per print, so a second containing a
+mix of paired and unpaired prints fell entirely to unpaired. The per-print cut
+is correct. Z26 08-21 ships as 1,055 spread legs / 2,171 lots and 35 option
+hedges / 1,045 lots. A future session should NOT go looking for a prior source
+for 1,033/57 -- there is none, and the number is wrong.
+
+**The JOIN-vs-EXISTS finding was made in this repo while building this**, not
+inherited from anywhere. Recorded in the session_render.py docstring under
+PROVENANCE so the credit and the absence of an earlier source both travel with
+the code.
+
+**Every one of Lou's figures reproduces exactly:** base 20,353, buy 48.6 /
+sell 51.4, clips 1.42 vs 1.31, unsided 1,203, night 54.3% buy flipping to day
+46.4%. Leg totals 1,090 prints / 3,216 lots on both partitions.
+
+**Blanks ruling implemented as stated:** IN the total, OUT of the aggressor
+base, NEVER prorated, with their own named block on the card.
+
+**Item 3 needed NO new machinery and NO cross-repo read.** The engine already
+holds the tape side and ingest.discover + ingest.reconcile already read the
+settle file. completeness() lives in the render job.
+
+**Verdict paths PROVEN with a synthetic post-cutover settle file** (temp dir,
+no production file touched), because every settle file on disk still predates
+the CumVolume cutover so real data can only produce NOT YET CHECKED. OK and
+FLAG both verified; FLAG names the contract and difference: 'CTZ6 -1,500 lots',
+the 2026-08-19 shape exactly.
+
+**FOUR RENDER DEFECTS CAUGHT BY EYEBALLING THE PNG**, none of which a test
+would have found: the window printed 14:19 (the last print) and read as a
+truncated capture -- now prints the real 14:20 boundary; a Share column sat
+under a Prints header; the NOT COMPARABLE verdict was a dead end with no
+number -- now NOT YET CHECKED with the reason; a wrapped sentence left an
+orphan line.
+
+**Conservation asserted in code, not just tested:** spread+hedge == leg total
+(prints AND lots), buy+sell+unsided == outright total.
+
+**Sabotage both ways:** dropping the size match turns 3 red; folding blanks
+into the aggressor base turns 6 red. 180 passed on restore.
+
+**renders/ gitignored** -- point-in-time artifacts, reproducible from the store.
+
+Item 5 (volume-at-price) still NOT started, as ruled.
