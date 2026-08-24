@@ -60,6 +60,7 @@
   tr:nth-child(even) td { background:#f9f9f9; }
   .flag-ok { color:#15803d; } .flag-warn { color:#c0392b; }
   #chart { margin-top:14px; height:380px; }
+  #vap-chart { margin-top:14px; height:520px; }
   .ftr { background:#f9f9f9; border-top:1px solid #e5e7eb; padding:12px 32px;
          display:flex; justify-content:space-between; font-size:11px; }
   .ftr .l { font-weight:700; color:#888888; text-transform:uppercase; letter-spacing:1.5px; }
@@ -90,6 +91,7 @@
       <option value="overlay">Overlay (compare days)</option>
       <option value="ab">Compare two days (A vs B)</option>
       <option value="totals">Daily totals</option>
+      <option value="vap">Volume at price</option>
     </select></div>
   <div class="ctl" id="ctl-date"><label>Session date</label>
     <select id="date"></select></div>
@@ -128,6 +130,14 @@
       <option value="60m">60 min</option>
       <option value="full">Full session</option>
     </select></div>
+  <div class="ctl" id="ctl-interval" style="display:none"><label>Price interval</label>
+    <select id="interval">
+      <option value="0.01">0.01</option>
+      <option value="0.05" selected>0.05</option>
+      <option value="0.10">0.10</option>
+      <option value="0.25">0.25</option>
+      <option value="1.00">1.00</option>
+    </select></div>
   <div class="ctl"><label>Trade types (include)</label>
     <div class="types" id="types">
       <label><input type="checkbox" value="outright" checked>Outright</label>
@@ -142,22 +152,31 @@
 
 <div class="wrap">
   <div id="error" class="err" style="display:none"></div>
-  <div class="banner">Totals</div>
+  <div class="banner" id="banner-totals">Totals</div>
   <div class="stats" id="stats"></div>
   <div class="banner">
-    <span>Volume profile</span>
+    <span id="chart-banner-label">Volume profile</span>
     <button class="png" id="btn-png" onclick="exportPng()" disabled>&#8681; Download PNG</button>
   </div>
   <div id="chart"></div>
+  <div id="vap-wrap" style="display:none">
+    <div class="stats" id="vap-stats"></div>
+    <div id="vap-chart"></div>
+    <div class="banner">By price level</div>
+    <table id="tbl-vap"><thead>
+      <tr><th>Price</th><th>Buy (Hit Bid)</th>
+          <th>Sell (Lift Ask)</th><th>Unsided</th></tr>
+    </thead><tbody></tbody></table>
+  </div>
   <div class="banner" id="banner-daily" style="display:none">Daily volume</div>
   <table id="tbl-daily" style="display:none"><thead>
     <tr><th>Date</th><th>Volume</th><th>Contract</th><th>Open</th><th>High</th><th>Low</th><th>Settle</th></tr>
   </thead><tbody></tbody></table>
-  <div class="banner">By contract</div>
+  <div class="banner" id="banner-contract">By contract</div>
   <table id="tbl-contract"><thead>
     <tr><th>Contract</th><th>Generic</th><th>Volume</th><th>Share</th></tr>
   </thead><tbody></tbody></table>
-  <div class="banner">By trade type</div>
+  <div class="banner" id="banner-type">By trade type</div>
   <table id="tbl-type"><thead>
     <tr><th>Type</th><th>Volume</th><th>Share</th></tr>
   </thead><tbody></tbody></table>
@@ -214,13 +233,31 @@ function onViewChange() {
   el('ctl-date').style.display  = (el('view').value === 'single') ? '' : 'none';
   el('ctl-range').style.display = isRange() ? '' : 'none';
   el('ctl-ab').style.display    = isAB() ? '' : 'none';
-  // Daily volume/price table is Totals-only -- hide it (with stale rows)
-  // the moment another view is picked, rather than leaving it visible.
-  var isTotals = (el('view').value === 'totals');
+  var view = el('view').value;
+  var isVap = (view === 'vap');
+  // Daily volume/price table is Totals-only -- hide it (with stale rows) the
+  // moment another view is picked, rather than leaving it visible.
+  var isTotals = (view === 'totals');
   el('banner-daily').style.display = isTotals ? '' : 'none';
   el('tbl-daily').style.display    = isTotals ? '' : 'none';
-  // Bucket is meaningless for daily totals (one point per session).
-  el('bucket').disabled = (el('view').value === 'totals');
+  // Bucket is meaningless for daily totals (one point per session) and for
+  // volume at price (price-bucketed, not time-bucketed).
+  el('bucket').disabled = isTotals || isVap;
+  // Price interval is VAP-only.
+  el('ctl-interval').style.display = isVap ? '' : 'none';
+  // VAP replaces the standard totals/chart/contract/type sections entirely
+  // with its own header, diverging chart and by-price-level table -- the
+  // ordinary time-of-day chart and by-contract/by-type tables mean nothing
+  // at this grain (one contract, no time axis).
+  el('banner-totals').style.display = isVap ? 'none' : '';
+  el('stats').style.display = isVap ? 'none' : '';
+  el('chart-banner-label').textContent = isVap ? 'Volume at price' : 'Volume profile';
+  el('chart').style.display = isVap ? 'none' : '';
+  el('vap-wrap').style.display = isVap ? '' : 'none';
+  el('banner-contract').style.display = isVap ? 'none' : '';
+  el('tbl-contract').style.display = isVap ? 'none' : '';
+  el('banner-type').style.display = isVap ? 'none' : '';
+  el('tbl-type').style.display = isVap ? 'none' : '';
   loadContracts();   // seed date differs per mode
 }
 
@@ -296,9 +333,12 @@ function armPngButton(snapshot) {
   el('btn-png').disabled = false;
 }
 
+function isVap() { return el('view').value === 'vap'; }
+
 function runQuery() {
   el('error').style.display = 'none';
   if (isAB()) { return runQueryAB(); }
+  if (isVap()) { return runQueryVap(); }
 
   var cmd = el('cmd').value, view = el('view').value;
 
@@ -318,6 +358,13 @@ function runQuery() {
   var pq = fetch('/v1/sessionvol/'+cmd+'/profile?'+windowParams()+base
                  +'&bucket='+el('bucket').value)
              .then(function(r){ return r.json(); });
+  // Aggressor time series needs its own fetch -- side is not in /window or
+  // /profile. Skipped for every other view (Promise.resolve(null)).
+  var sideq = (view === 'aggressor')
+    ? fetch('/v1/sessionvol/'+cmd+'/side?'+windowParams()
+           +'&contracts='+selectedContracts()+dq)
+        .then(function(r){ return r.json(); })
+    : Promise.resolve(null);
   // Price overlay is ONLY meaningful for Daily Totals (one point per session).
   // Fetched from the ICE eod capture root (futures_settle_<date>.csv, the
   // same read-only source this engine's blotter ingest already uses) --
@@ -334,10 +381,11 @@ function runQuery() {
         .catch(function(e){ return {ok: false, body: {error: String(e)}}; })
     : Promise.resolve(null);
 
-  Promise.all([wq, pq, priceq]).then(function(res) {
-    var w = res[0], p = res[1], priceRes = res[2];
+  Promise.all([wq, pq, priceq, sideq]).then(function(res) {
+    var w = res[0], p = res[1], priceRes = res[2], s = res[3];
     if (w.error) { showErr(w.error); return; }
     if (p.error) { showErr(p.error); return; }
+    if (s && s.error) { showErr(s.error); return; }
     renderStats(w); renderTables(w);
     var priceInfo = null;
     if (priceRes) {
@@ -367,13 +415,131 @@ function runQuery() {
     else if (view === 'continuous') renderContinuous(p);
     else if (view === 'overlay')    renderOverlay(p);
     else if (view === 'totals')     renderTotals(w, priceInfo);
+    else if (view === 'aggressor')  renderAggressor(s);
     armPngButton({
-      view: view, cmd: cmd, w: w, p: p, priceInfo: priceInfo,
+      view: view, cmd: cmd, w: w, p: p, priceInfo: priceInfo, s: s,
       dateLabel: isRange() ? el('dfrom').value+'_to_'+el('dto').value : el('date').value
     });
   }).catch(function(e) {
     showErr('Query failed: ' + e);
   });
+}
+
+// VOLUME AT PRICE: reads /vap directly (single contract, one query, no
+// window/profile/price fetch -- this view's grain and control set are both
+// different enough from every other view that it short-circuits runQuery()
+// the same way A-vs-B does).
+function runQueryVap() {
+  var cmd = el('cmd').value;
+  var picked = Array.from(el('contracts').selectedOptions).map(function(o){ return o.value; });
+  if (picked.length !== 1) {
+    showErr('Volume at price needs exactly one contract selected (picked: '
+      + picked.length + '). Volume at price across contracts is not meaningful.');
+    return;
+  }
+  var a = el('dfrom').value, b = el('dto').value;
+  if (a > b) { var t = a; a = b; b = t; }
+  var q = '/v1/sessionvol/'+cmd+'/vap?from='+a+'&to='+b
+        + '&contract='+picked[0] + '&' + windowParams()
+        + '&interval=' + el('interval').value;
+  fetch(q).then(function(r){ return r.json(); }).then(function(j) {
+    if (j.error) { showErr(j.error); return; }
+    if (j.no_tick_data_dates && j.no_tick_data_dates.length) {
+      showErr('No tick data for ' + j.no_tick_data_dates.length + ' of '
+        + j.dates.length + ' session(s) in range (' + j.no_tick_data_dates.join(', ')
+        + ') -- excluded from every figure below, not shown as zero.');
+    }
+    renderVap(j);
+    armPngButton({ view: 'vap', cmd: cmd, vap: j, dateLabel: a === b ? a : a+'_to_'+b });
+  }).catch(function(e) {
+    showErr('Query failed: ' + e);
+  });
+}
+
+// Diverging horizontal bars: price on Y, volume on X, buy extends LEFT of a
+// centre zero and sell extends RIGHT -- imbalance at each price level reads
+// instantly, which is the entire point of this shape over a vertical stack.
+// Unsided is NOT a third bar (a two-sided diverging axis has no third
+// direction for it to occupy) -- it is stated in the header instead, real
+// volume, never dropped and never prorated into either side.
+function renderVap(j) {
+  var levels = j.levels || [];
+  var prices = levels.map(function(l){ return l.price; });
+  var buyX = levels.map(function(l){ return -l.buy.lots; });   // negative = left
+  var sellX = levels.map(function(l){ return l.sell.lots; });   // positive = right
+
+  Plotly.newPlot('vap-chart', [
+    { x: buyX, y: prices, type: 'bar', orientation: 'h', name: 'Buy (Hit Bid)',
+      marker: { color: AGG.buy },
+      customdata: levels.map(function(l){ return l.buy; }),
+      hovertemplate: 'Buy (Hit Bid)  %{y:.2f}<br>%{customdata.lots:,.0f} lots'
+        + '  (%{customdata.prints:,.0f} prints, clip %{customdata.clip:.2f})<extra></extra>' },
+    { x: sellX, y: prices, type: 'bar', orientation: 'h', name: 'Sell (Lift Ask)',
+      marker: { color: AGG.sell },
+      customdata: levels.map(function(l){ return l.sell; }),
+      hovertemplate: 'Sell (Lift Ask)  %{y:.2f}<br>%{customdata.lots:,.0f} lots'
+        + '  (%{customdata.prints:,.0f} prints, clip %{customdata.clip:.2f})<extra></extra>' }
+  ], {
+    barmode: 'overlay',
+    margin: { t: 10, r: 20, b: 50, l: 60 },
+    xaxis: { title: 'Volume (lots)  ← Buy (Hit Bid)   Sell (Lift Ask) →',
+             zeroline: true, zerolinecolor: '#888888', zerolinewidth: 1.5,
+             gridcolor: '#e5e7eb', tickformat: ',.0f' },
+    yaxis: { title: 'Price', gridcolor: '#e5e7eb', dtick: j.interval >= 1 ? j.interval : undefined },
+    shapes: (j.vwap != null) ? [{ type: 'line', x0: 0, x1: 1, xref: 'paper',
+      y0: j.vwap, y1: j.vwap, yref: 'y', line: { color: PNG.navy, width: 1.5, dash: 'dot' } }] : [],
+    annotations: (j.vwap != null) ? [{ x: 1, xref: 'paper', y: j.vwap, yref: 'y',
+      text: 'VWAP ' + j.vwap.toFixed(2), showarrow: false, font: { size: 10, color: PNG.navy },
+      xanchor: 'right', bgcolor: '#ffffff' }] : [],
+    legend: { orientation: 'h', y: 1.08, font: { size: 11 } },
+    plot_bgcolor: '#ffffff', paper_bgcolor: '#ffffff',
+    font: { family: 'Arial, sans-serif', color: '#222222' }
+  }, { displayModeBar: false, responsive: true });
+
+  renderVapHeader(j);
+  renderVapTable(levels);
+}
+
+// ICE's own header shape: Lift (Ask) / Hit (Bid), lots AND trade count, clip
+// falling straight out of the two. Unsided stated here (never as a bar).
+// The perspective line is load-bearing -- see api/routes_query.py's comment
+// on why ICE's Lift (Ask) is VLM Sell here, not VLM Buy.
+function renderVapHeader(j) {
+  var b = j.buy, s = j.sell, u = j.unsided;
+  function clip(v) { return v != null ? v.toFixed(2) : '—'; }
+  el('vap-stats').innerHTML =
+      '<div class="stat"><div class="lbl">Hit (Bid) = Buy</div><div class="val" style="color:'+AGG.buy+'">'
+        + fmt(b.lots) + '</div><div class="lbl" style="margin-top:4px">'
+        + fmt(b.prints) + ' trades &middot; clip ' + clip(b.clip) + '</div></div>'
+    + '<div class="stat"><div class="lbl">Lift (Ask) = Sell</div><div class="val" style="color:'+AGG.sell+'">'
+        + fmt(s.lots) + '</div><div class="lbl" style="margin-top:4px">'
+        + fmt(s.prints) + ' trades &middot; clip ' + clip(s.clip) + '</div></div>'
+    + '<div class="stat"><div class="lbl">Unsided</div><div class="val" style="color:'+AGG.unsided+'">'
+        + fmt(u.lots) + '</div><div class="lbl" style="margin-top:4px">'
+        + fmt(u.prints) + ' trades (real volume, no aggressor stamp)</div></div>'
+    + '<div class="stat"><div class="lbl">VWAP</div><div class="val">'
+        + (j.vwap != null ? j.vwap.toFixed(2) : '—') + '</div></div>'
+    + '<div class="stat"><div class="lbl">Outright total</div><div class="val">' + fmt(j.outright_total) + '</div></div>'
+    + '<div class="stat"><div class="lbl">Interval</div><div class="val" style="font-size:18px">' + j.interval.toFixed(2) + '</div></div>'
+    + '<div class="stat" style="min-width:280px"><div class="lbl">Perspective</div>'
+        + '<div style="font-size:11px;color:#444;margin-top:4px;line-height:1.4">' + j.perspective + '</div></div>';
+}
+
+// Four columns: price, buy lots, sell lots, unsided. Clip/prints dropped at
+// this grain -- see the CLIP AT THE PRICE LEVEL note in
+// store/repository.py's volume_at_price(): on liquid buckets (10+
+// prints/side) where clip diverges 1.5x or more between sides, the
+// higher-clip side is the higher-lots side 20 of 20 times, so clip restates
+// lots exactly where it would have anything to say. Clip stays in the
+// session-level header (renderVapHeader) -- a character summary, not a
+// per-level signal.
+function renderVapTable(levels) {
+  el('tbl-vap').querySelector('tbody').innerHTML = levels.slice().reverse().map(function(l) {
+    return '<tr><td>' + l.price.toFixed(2) + '</td>'
+      + '<td>' + fmt(l.buy.lots) + '</td>'
+      + '<td>' + fmt(l.sell.lots) + '</td>'
+      + '<td>' + fmt(l.unsided.lots) + '</td></tr>';
+  }).join('');
 }
 
 // A vs B: two ARBITRARY sessions (e.g. today vs the same weekday last month).
@@ -651,6 +817,83 @@ function renderDailyTable(dates, pd, series) {
   }).join('');
 }
 
+// VLM master palette, aggressor colors -- buy/sell reuse the same green/red
+// already used for the A-vs-B delta bars (dashboard.html PNG.green/PNG.red,
+// defined below); unsided is subordinate to both, deliberately -- a neutral
+// gray, not a third saturated color competing for attention.
+var AGG = { buy: '#15803d', sell: '#c0392b', unsided: '#b0b0b0' };
+
+// AGGRESSOR TIME SERIES: one stacked bar per session -- buy / sell / unsided,
+// stacked so the bar height is the same outright total every other view
+// would show and the split reads inside it. Base for buy/sell share is
+// AGGRESSOR-TAGGED OUTRIGHTS ONLY (base_lots = buy+sell); unsided is its own
+// segment, never folded into either side or hidden. Clip size (lots/print) is
+// free at this grain and is the character a bar height hides -- shown per
+// bar on hover and in the readout table below the chart, not squeezed onto
+// the bar itself.
+function renderAggressor(s) {
+  var pd = (s && s.per_date) || {};
+  var dates = Object.keys(pd).sort();
+
+  function seg(side, color, name) {
+    return {
+      x: dates, y: dates.map(function(d){ return pd[d][side].lots; }),
+      type: 'bar', name: name, marker: { color: color },
+      customdata: dates.map(function(d){ return pd[d][side]; }),
+      hovertemplate: name + '  %{y:,.0f} lots'
+        + '<br>clip %{customdata.clip:.2f}'
+        + '<extra></extra>'
+    };
+  }
+  var traces = [
+    seg('buy', AGG.buy, 'Buy'),
+    seg('sell', AGG.sell, 'Sell'),
+    seg('unsided', AGG.unsided, 'Unsided')
+  ];
+  Plotly.newPlot('chart', traces, {
+    barmode: 'stack',
+    margin: { t: 10, r: 20, b: 70, l: 60 },
+    xaxis: { type: 'category', tickangle: -45,
+             tickfont: { size: 10, family: 'Arial' } },
+    yaxis: { title: 'Volume (lots)', gridcolor: '#e5e7eb' },
+    legend: { orientation: 'h', y: 1.12, font: { size: 11 } },
+    plot_bgcolor: '#ffffff', paper_bgcolor: '#ffffff',
+    font: { family: 'Arial, sans-serif', color: '#222222' }
+  }, { displayModeBar: false, responsive: true });
+
+  renderAggressorTable(dates, pd);
+
+  // Base-vs-unsided tile, appended after renderStats() like the Daily
+  // Totals settle tile -- only this view gets it.
+  if (dates.length) {
+    var lastBase = pd[dates[dates.length-1]].base_lots;
+    el('stats').innerHTML += '<div class="stat"><div class="lbl">Aggressor base (last session)</div>'
+      + '<div class="val">' + fmt(lastBase) + '</div></div>';
+  }
+}
+
+// Per-session readout: share of base and clip size per side, plus unsided
+// lots -- the character a stacked bar alone cannot show. pct_of_base is null
+// for unsided BY DEFINITION (never expressed against the base); clip is null
+// when a side had zero prints (e.g. a Bloomberg seed-era date, all unsided).
+function renderAggressorTable(dates, pd) {
+  el('banner-daily').style.display = '';
+  el('tbl-daily').style.display = '';
+  var tbl = el('tbl-daily');
+  tbl.querySelector('thead').innerHTML =
+    '<tr><th>Date</th><th>Base (lots)</th><th>Buy %</th><th>Buy clip</th>'
+    + '<th>Sell %</th><th>Sell clip</th><th>Unsided (lots)</th></tr>';
+  function pct(v) { return v != null ? v.toFixed(1) + '%' : '—'; }
+  function clip(v) { return v != null ? v.toFixed(2) : '—'; }
+  tbl.querySelector('tbody').innerHTML = dates.map(function(d) {
+    var r = pd[d];
+    return '<tr><td>' + d + '</td><td>' + fmt(r.base_lots) + '</td>'
+      + '<td>' + pct(r.buy.pct_of_base) + '</td><td>' + clip(r.buy.clip) + '</td>'
+      + '<td>' + pct(r.sell.pct_of_base) + '</td><td>' + clip(r.sell.clip) + '</td>'
+      + '<td>' + fmt(r.unsided.lots) + '</td></tr>';
+  }).join('');
+}
+
 function renderStats(w) {
   var t = w.totals;
   el('stats').innerHTML =
@@ -772,6 +1015,14 @@ function _pngSeries() {
     }
     return out;
   }
+  if (L.view === 'aggressor') {
+    var pd3 = (L.s && L.s.per_date) || {}, dts3 = Object.keys(pd3).sort();
+    return { kind:'stackedbars', xLabels: dts3, series: [
+      { name:'Buy', color: AGG.buy, values: dts3.map(function(d){ return pd3[d].buy.lots; }) },
+      { name:'Sell', color: AGG.sell, values: dts3.map(function(d){ return pd3[d].sell.lots; }) },
+      { name:'Unsided', color: AGG.unsided, values: dts3.map(function(d){ return pd3[d].unsided.lots; }) }
+    ] };
+  }
   if (L.view === 'overlay') {
     var dates2 = Object.keys(L.p.per_date || {}).sort();
     var xLabels2 = (L.p.per_date[dates2[dates2.length-1]] || [])
@@ -840,6 +1091,13 @@ function _pngStats() {
     tiles.push({label: 'Avg ' + (L.priceInfo.price_label || 'Settle (front month)'),
                value: L.priceInfo.avg_settle.toFixed(2)});
   }
+  if (L.view === 'aggressor' && L.s && L.s.per_date) {
+    var dts4 = Object.keys(L.s.per_date).sort();
+    if (dts4.length) {
+      tiles.push({label: 'Aggressor base (last session)',
+                 value: fmt(L.s.per_date[dts4[dts4.length-1]].base_lots)});
+    }
+  }
   return tiles;
 }
 
@@ -854,7 +1112,8 @@ function _pngTables() {
     return { head: head, rows: rows };
   }
   var out = { contract: read(el('tbl-contract')), type: read(el('tbl-type')) };
-  if (_LAST.view === 'totals' && el('tbl-daily').style.display !== 'none') {
+  if ((_LAST.view === 'totals' || _LAST.view === 'aggressor')
+      && el('tbl-daily').style.display !== 'none') {
     out.daily = read(el('tbl-daily'));
   }
   return out;
@@ -862,6 +1121,12 @@ function _pngTables() {
 
 function exportPng() {
   if (!_LAST) { return; }
+  // VAP's chart (diverging horizontal bars, price levels) and table (price
+  // rows, not contract/type) are a different shape from every other view's
+  // PNG -- its own export function rather than forcing it through
+  // _pngSeries()/_pngDrawChart()/_pngTables(), which stay untouched for the
+  // other five views.
+  if (_LAST.view === 'vap') { return exportVapPng(); }
   var L = _LAST;
   var S = 2;                    // retina scale, matches the reference pattern
   var W = 1180, PAD = 24;
@@ -888,7 +1153,8 @@ function exportPng() {
   var now = new Date();
   var timeStr = now.toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit', hour12:false, timeZone:'America/New_York'});
   var viewLabel = {single:'Single Day', continuous:'Continuous', overlay:'Overlay (Compare Days)',
-                   ab:'Compare Two Days (A vs B)', totals:'Daily Totals'}[L.view] || L.view;
+                   ab:'Compare Two Days (A vs B)', totals:'Daily Totals',
+                   aggressor:'Aggressor Time Series'}[L.view] || L.view;
   var name = (CATALOG && (CATALOG.commodities||[]).find(function(c){return c.code===L.cmd;}) || {}).name || L.cmd;
 
   // Header
@@ -989,7 +1255,17 @@ function _pngDrawChart(cx, data, x0, y0, w, h) {
   var plotX = x0+padL, plotY = y0+padT, plotW = w-padL-padR, plotH = h-padT-padB;
 
   var allVals = [];
-  data.series.forEach(function(s){ allVals = allVals.concat(s.values); });
+  if (data.kind === 'stackedbars') {
+    // Stacked: axis must fit the SUM per bar, not each series' own max.
+    var n0 = data.xLabels.length || 1;
+    for (var i0 = 0; i0 < n0; i0++) {
+      var sum0 = 0;
+      data.series.forEach(function(s){ sum0 += s.values[i0] || 0; });
+      allVals.push(sum0);
+    }
+  } else {
+    data.series.forEach(function(s){ allVals = allVals.concat(s.values); });
+  }
   var maxV = Math.max.apply(null, allVals.concat([1]));
   // Axis top = smallest 1/2/2.5/5 x 10^n step ABOVE maxV, divided into the
   // gridline bands below. Plain power-of-ten rounding overshot badly (a 10.5k
@@ -1023,7 +1299,28 @@ function _pngDrawChart(cx, data, x0, y0, w, h) {
   }
 
   var n = data.xLabels.length || 1;
-  if (data.kind === 'bars') {
+  if (data.kind === 'stackedbars') {
+    var bw2 = Math.max(1, plotW/n * 0.7);
+    for (var i2 = 0; i2 < n; i2++) {
+      var bx2 = plotX + (i2+0.5)*(plotW/n) - bw2/2;
+      var stackY = plotY + plotH;   // grows upward from the axis
+      data.series.forEach(function(s) {
+        var v = s.values[i2] || 0;
+        var bh2 = plotH * (v/niceMax);
+        cx.fillStyle = s.color;
+        cx.fillRect(bx2, stackY-bh2, bw2, bh2);
+        stackY -= bh2;
+      });
+    }
+    // Legend (same treatment as the lines-view legend below)
+    cx.font = 'bold 10px Arial'; cx.textAlign = 'left'; cx.textBaseline = 'middle';
+    var lx2 = plotX + 6, ly2 = y0 + 4;
+    data.series.forEach(function(s) {
+      cx.fillStyle = s.color; cx.fillRect(lx2, ly2-4, 14, 3);
+      cx.fillStyle = PNG.dark; cx.fillText(s.name, lx2+18, ly2);
+      lx2 += 18 + cx.measureText(s.name).width + 16;
+    });
+  } else if (data.kind === 'bars') {
     var s = data.series[0];
     var bw = Math.max(1, plotW/n * 0.7);
     s.values.forEach(function(v, i) {
@@ -1081,7 +1378,8 @@ function _pngDrawChart(cx, data, x0, y0, w, h) {
   var maxTicks = Math.floor(plotW / 60);
   var step = Math.max(1, Math.ceil(n / Math.max(1,maxTicks)));
   for (var i = 0; i < n; i += step) {
-    var tx = plotX + (data.kind==='bars' ? (i+0.5)*(plotW/n) : (n>1 ? i*(plotW/(n-1)) : plotW/2));
+    var isBarKind = (data.kind==='bars' || data.kind==='stackedbars');
+    var tx = plotX + (isBarKind ? (i+0.5)*(plotW/n) : (n>1 ? i*(plotW/(n-1)) : plotW/2));
     cx.save(); cx.translate(tx, plotY+plotH+6); cx.rotate(-Math.PI/4);
     cx.textAlign = 'right'; cx.fillText(data.xLabels[i], 0, 0);
     cx.restore();
@@ -1120,6 +1418,274 @@ function _pngDrawTable(cx, title, t, x0, y0, w, rowH, theadH, secH) {
     y += rowH;
   });
   return y;
+}
+
+// Shared VAP PNG header + KPI tiles + perspective statement -- identical on
+// the chart PNG and every table-page PNG (a table with no session, no window
+// and no basis is unreadable cold, and cold-readable is the standing rule).
+// suffix is drawn into the title line (e.g. 'Chart', 'Table -- page 2 of 3')
+// so a reader can tell which artifact they are looking at without relying on
+// the filename alone. Returns the y-offset immediately below the block.
+function _pngVapChrome(cx, W, PAD, L, j, suffix) {
+  function clip(v) { return v != null ? v.toFixed(2) : '—'; }
+  var stats = [
+    {label: 'Hit (Bid) = Buy', value: fmt(j.buy.lots) + '  (' + fmt(j.buy.prints) + ' trades, clip ' + clip(j.buy.clip) + ')', color: PNG.green},
+    {label: 'Lift (Ask) = Sell', value: fmt(j.sell.lots) + '  (' + fmt(j.sell.prints) + ' trades, clip ' + clip(j.sell.clip) + ')', color: PNG.red},
+    {label: 'Unsided', value: fmt(j.unsided.lots) + '  (' + fmt(j.unsided.prints) + ' trades)'},
+    {label: 'VWAP', value: j.vwap != null ? j.vwap.toFixed(2) : '—'},
+    {label: 'Outright total', value: fmt(j.outright_total)},
+    {label: 'Interval', value: j.interval.toFixed(2)}
+  ];
+
+  var HDR_H = 78, ACCENT = 4, KPI_H = 76, PERSP_H = 44;
+  var now = new Date();
+  var timeStr = now.toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit', hour12:false, timeZone:'America/New_York'});
+  var name = (CATALOG && (CATALOG.commodities||[]).find(function(c){return c.code===L.cmd;}) || {}).name || L.cmd;
+
+  cx.fillStyle = PNG.navy; cx.fillRect(0, 0, W, HDR_H);
+  cx.fillStyle = PNG.gold; cx.fillRect(0, HDR_H, W, ACCENT);
+  cx.textBaseline = 'alphabetic'; cx.textAlign = 'left';
+  cx.fillStyle = PNG.white; cx.font = 'bold 26px Arial';
+  cx.fillText('VLM Commodities — Cotton Desk', PAD, 34);
+  cx.fillStyle = PNG.gold; cx.font = 'bold 14px Arial';
+  cx.fillText('ICE TIME & SALES — SESSION VOLUME', PAD, 54);
+  cx.fillStyle = PNG.muted; cx.font = '12px Arial';
+  cx.fillText(L.cmd + ' — ' + name + '  ·  Volume at Price  ·  ' + j.contract
+              + (suffix ? '  ·  ' + suffix : ''), PAD, 70);
+  cx.textAlign = 'right';
+  cx.fillStyle = PNG.white; cx.font = 'bold 16px Arial';
+  cx.fillText(L.dateLabel, W-PAD, 34);
+  cx.fillStyle = PNG.muted; cx.font = '11px Arial';
+  cx.fillText('As of ' + timeStr + ' ET', W-PAD, 54);
+  cx.fillText('ICE Futures U.S. tick tape · EOD capture', W-PAD, 70);
+
+  var y = HDR_H + ACCENT + 12;
+
+  var perRow = Math.min(stats.length, 6);
+  var kpiRows = Math.ceil(stats.length / perRow);
+  var KPI_BLOCK = kpiRows*KPI_H + (kpiRows-1)*10;
+  var gap = 10, tileW = Math.floor((W - PAD*2 - gap*(perRow-1)) / perRow);
+  stats.forEach(function(s, i) {
+    var col = i % perRow, row = Math.floor(i / perRow);
+    var tx = PAD + col*(tileW+gap), ty = y + row*(KPI_H+gap);
+    cx.fillStyle = PNG.alt; cx.fillRect(tx, ty, tileW, KPI_H);
+    cx.strokeStyle = PNG.border; cx.lineWidth = 1; cx.strokeRect(tx+0.5, ty+0.5, tileW-1, KPI_H-1);
+    cx.textAlign = 'left'; cx.textBaseline = 'alphabetic';
+    cx.fillStyle = PNG.lgray; var ls = 10; cx.font = 'bold '+ls+'px Arial';
+    var lbl = s.label.toUpperCase();
+    while (cx.measureText(lbl).width > tileW-24 && ls > 7) { ls--; cx.font = 'bold '+ls+'px Arial'; }
+    cx.fillText(lbl, tx+12, ty+22);
+    cx.fillStyle = s.color || PNG.navy; var fs = 16; cx.font = 'bold '+fs+'px Arial';
+    while (cx.measureText(s.value).width > tileW-24 && fs > 10) { fs--; cx.font = 'bold '+fs+'px Arial'; }
+    cx.fillText(s.value, tx+12, ty+KPI_H-16);
+  });
+  y += KPI_BLOCK + 10;
+
+  // Perspective statement -- load-bearing, not a footnote: states once which
+  // convention (ICE's Lift/Hit vs VLM's pinned Buy/Sell) this card uses.
+  cx.fillStyle = PNG.alt; cx.fillRect(PAD, y, W-PAD*2, PERSP_H);
+  cx.strokeStyle = PNG.border; cx.strokeRect(PAD+0.5, y+0.5, W-PAD*2-1, PERSP_H-1);
+  cx.fillStyle = PNG.dark; cx.font = '11px Arial'; cx.textAlign = 'left'; cx.textBaseline = 'middle';
+  cx.fillText(j.perspective, PAD+12, y+PERSP_H/2);
+  y += PERSP_H + 12;
+
+  return y;
+}
+
+function _pngVapFooter(cx, W, PAD, FOOT_H, y) {
+  cx.fillStyle = PNG.alt; cx.fillRect(0, y, W, FOOT_H);
+  cx.strokeStyle = PNG.border; cx.beginPath(); cx.moveTo(0, y+0.5); cx.lineTo(W, y+0.5); cx.stroke();
+  cx.textBaseline = 'middle';
+  cx.fillStyle = PNG.lgray; cx.font = 'bold 10px Arial'; cx.textAlign = 'left';
+  cx.fillText('VLM COMMODITIES LTD  ·  COTTON DESK', PAD, y+FOOT_H/2);
+  cx.fillStyle = PNG.muted; cx.font = '10px Arial'; cx.textAlign = 'right';
+  cx.fillText('vlmdata.com · ICE session-volume engine · for discussion purposes only', W-PAD, y+FOOT_H/2);
+}
+
+// Explicit pagination rule, not a feel: derived from the chrome height
+// (header+KPI+perspective+footer, ~286px) against a ~1600px comfortable
+// single-artifact height, at ROW_H=22 two-block layout -> ~114 rows/page.
+// Rounded to 120 (60 rows per block) so the threshold is a stated, testable
+// constant, not a magic number picked by eye.
+var VAP_MAX_ROWS_PER_PAGE = 120;
+
+// VOLUME AT PRICE -- TWO PNGs. The chart is one artifact (one distribution;
+// paginating it destroys the shape, so it never does), the table is
+// another, paginated by VAP_MAX_ROWS_PER_PAGE when the price range at the
+// selected interval exceeds that. Distinct filenames so they cannot be
+// confused in a folder. Both carry the same header/KPI/perspective chrome
+// -- a table with no session, no window and no basis is unreadable cold.
+function exportVapPng() {
+  _exportVapChartPng();
+  _exportVapTablePngs();
+}
+
+function _exportVapChartPng() {
+  var L = _LAST, j = L.vap;
+  var S = 2, W = 1180, PAD = 24, CHART_H = 460, FOOT_H = 34;
+
+  // Chrome height is deterministic (6 stats -> 1 KPI row always, for this
+  // view) so it's computed directly rather than measured via a dry run.
+  var HDR_H = 78, ACCENT = 4, KPI_H = 76, PERSP_H = 44;
+  var CHROME_H = HDR_H + ACCENT + 12 + (KPI_H + 10) + PERSP_H + 12;
+  var H = CHROME_H + CHART_H + 16 + FOOT_H;
+
+  var cv = document.createElement('canvas');
+  cv.width = W*S; cv.height = H*S;
+  var cx = cv.getContext('2d');
+  cx.scale(S, S);
+  cx.fillStyle = PNG.white; cx.fillRect(0, 0, W, H);
+
+  var y = _pngVapChrome(cx, W, PAD, L, j, 'Chart');
+  _pngDrawVapChart(cx, j, PAD, y, W-PAD*2, CHART_H);
+  y += CHART_H + 16;
+  _pngVapFooter(cx, W, PAD, FOOT_H, y);
+
+  var link = document.createElement('a');
+  link.download = 'vlm_' + L.cmd + '_vap_chart_' + j.contract + '_' + L.dateLabel + '.png';
+  link.href = cv.toDataURL('image/png');
+  link.click();
+}
+
+function _exportVapTablePngs() {
+  var L = _LAST, j = L.vap;
+  var S = 2, W = 1180, PAD = 24, FOOT_H = 34;
+  var ROW_H = 22, THEAD_H = 26, SEC_H = 28;
+  var levels = j.levels || [];
+
+  // Highest price first, matching the chart's reading direction (higher
+  // price sits higher). Two column blocks side by side, price range split
+  // down the middle: LEFT block = upper (higher-price) half, RIGHT block =
+  // lower half, each block reading top-to-bottom -- so scanning
+  // left-top -> left-bottom -> right-top -> right-bottom moves price
+  // downward the whole way, the same direction the chart reads, and the eye
+  // never reverses.
+  var desc = levels.slice().reverse();
+  var pageCount = Math.max(1, Math.ceil(desc.length / VAP_MAX_ROWS_PER_PAGE));
+
+  for (var page = 0; page < pageCount; page++) {
+    var pageRows = desc.slice(page*VAP_MAX_ROWS_PER_PAGE, (page+1)*VAP_MAX_ROWS_PER_PAGE);
+    var half = Math.ceil(pageRows.length / 2);
+    var leftRows = pageRows.slice(0, half);       // upper half of THIS page's range
+    var rightRows = pageRows.slice(half);          // lower half
+
+    function toRow(l) { return [l.price.toFixed(2), fmt(l.buy.lots), fmt(l.sell.lots), fmt(l.unsided.lots)]; }
+    var head = ['Price', 'Buy (Hit Bid)', 'Sell (Lift Ask)', 'Unsided'];
+    var leftTable = { head: head, rows: leftRows.map(toRow) };
+    var rightTable = { head: head, rows: rightRows.map(toRow) };
+
+    var HDR_H = 78, ACCENT = 4, KPI_H = 76, PERSP_H = 44;
+    var CHROME_H = HDR_H + ACCENT + 12 + (KPI_H + 10) + PERSP_H + 12;
+    var maxRows = Math.max(leftTable.rows.length, rightTable.rows.length);
+    var TBL_H = SEC_H + THEAD_H + maxRows*ROW_H;
+    var H = CHROME_H + TBL_H + 16 + FOOT_H;
+
+    var cv = document.createElement('canvas');
+    cv.width = W*S; cv.height = H*S;
+    var cx = cv.getContext('2d');
+    cx.scale(S, S);
+    cx.fillStyle = PNG.white; cx.fillRect(0, 0, W, H);
+
+    var pageSuffix = pageCount > 1
+      ? 'Table — page ' + (page+1) + ' of ' + pageCount
+          + ' (' + pageRows[pageRows.length-1].price.toFixed(2) + '–' + pageRows[0].price.toFixed(2) + ')'
+      : 'Table';
+    var y = _pngVapChrome(cx, W, PAD, L, j, pageSuffix);
+
+    var blockGap = 20;
+    var blockW = (W - PAD*2 - blockGap) / 2;
+    _pngDrawTable(cx, 'BY PRICE LEVEL — UPPER', leftTable, PAD, y, blockW, ROW_H, THEAD_H, SEC_H);
+    _pngDrawTable(cx, 'BY PRICE LEVEL — LOWER', rightTable, PAD+blockW+blockGap, y, blockW, ROW_H, THEAD_H, SEC_H);
+    y += TBL_H + 16;
+
+    _pngVapFooter(cx, W, PAD, FOOT_H, y);
+
+    var link = document.createElement('a');
+    var pageTag = pageCount > 1 ? ('_p' + (page+1) + 'of' + pageCount) : '';
+    link.download = 'vlm_' + L.cmd + '_vap_table_' + j.contract + '_' + L.dateLabel + pageTag + '.png';
+    link.href = cv.toDataURL('image/png');
+    link.click();
+  }
+}
+
+function _pngDrawVapChart(cx, j, x0, y0, w, h) {
+  cx.fillStyle = PNG.white; cx.fillRect(x0, y0, w, h);
+  cx.strokeStyle = PNG.border; cx.strokeRect(x0+0.5, y0+0.5, w-1, h-1);
+  var levels = j.levels || [];
+  var padL = 60, padR = 60, padT = 10, padB = 42;
+  var plotX = x0+padL, plotY = y0+padT, plotW = w-padL-padR, plotH = h-padT-padB;
+
+  var maxLots = Math.max.apply(null, levels.map(function(l){
+    return Math.max(l.buy.lots, l.sell.lots);
+  }).concat([1]));
+  var axis = _niceAxis(maxLots), niceMax = axis.top;
+  var midX = plotX + plotW/2;
+  var halfW = plotW/2 - 4;
+
+  // Zero line + a couple of gridlines each side
+  cx.strokeStyle = PNG.border; cx.fillStyle = PNG.lgray; cx.font = '9px Arial';
+  cx.textBaseline = 'middle';
+  [0.5, 1].forEach(function(frac) {
+    var gxL = midX - halfW*frac, gxR = midX + halfW*frac;
+    cx.beginPath(); cx.moveTo(gxL, plotY); cx.lineTo(gxL, plotY+plotH); cx.stroke();
+    cx.beginPath(); cx.moveTo(gxR, plotY); cx.lineTo(gxR, plotY+plotH); cx.stroke();
+    cx.textAlign = 'center';
+    cx.fillText(fmt(niceMax*frac), gxL, plotY+plotH+12);
+    cx.fillText(fmt(niceMax*frac), gxR, plotY+plotH+12);
+  });
+  cx.strokeStyle = PNG.lgray; cx.lineWidth = 1.5;
+  cx.beginPath(); cx.moveTo(midX, plotY); cx.lineTo(midX, plotY+plotH); cx.stroke();
+
+  // Bars -- price ascends bottom-to-top (a lower row index = a lower price),
+  // buy bars grow LEFT from centre, sell bars grow RIGHT.
+  var n = levels.length || 1;
+  var rowH = plotH / n;
+  var barH = Math.max(1, rowH * 0.75);
+  levels.forEach(function(l, i) {
+    var cy = plotY + plotH - (i+0.5)*rowH;   // i=0 (lowest price) at the bottom
+    var bw = (l.buy.lots / niceMax) * halfW;
+    cx.fillStyle = AGG.buy;
+    cx.fillRect(midX - bw, cy - barH/2, bw, barH);
+    var sw = (l.sell.lots / niceMax) * halfW;
+    cx.fillStyle = AGG.sell;
+    cx.fillRect(midX, cy - barH/2, sw, barH);
+  });
+
+  // Price axis labels -- thin out to avoid overlap at fine intervals.
+  cx.fillStyle = PNG.lgray; cx.font = '9px Arial'; cx.textAlign = 'right'; cx.textBaseline = 'middle';
+  var maxTicks = Math.floor(plotH / 14);
+  var step = Math.max(1, Math.ceil(n / Math.max(1, maxTicks)));
+  for (var i = 0; i < n; i += step) {
+    var cy = plotY + plotH - (i+0.5)*rowH;
+    cx.fillText(levels[i].price.toFixed(2), plotX-6, cy);
+  }
+
+  // VWAP marker
+  if (j.vwap != null && levels.length) {
+    var lo = levels[0].price, hi = levels[levels.length-1].price;
+    if (j.vwap >= lo && j.vwap <= hi) {
+      var frac = (j.vwap - lo) / Math.max(1e-9, (hi - lo));
+      var vy = plotY + plotH - frac*plotH;
+      cx.strokeStyle = PNG.navy; cx.lineWidth = 1.5; cx.setLineDash([3,3]);
+      cx.beginPath(); cx.moveTo(plotX, vy); cx.lineTo(plotX+plotW, vy); cx.stroke();
+      cx.setLineDash([]);
+      cx.fillStyle = PNG.navy; cx.font = 'bold 9px Arial'; cx.textAlign = 'right'; cx.textBaseline = 'bottom';
+      cx.fillText('VWAP ' + j.vwap.toFixed(2), plotX+plotW-4, vy-2);
+    }
+  }
+
+  // X-axis title -- states the diverging direction, same wording as the
+  // on-screen Plotly axis title (dashboard.html:485).
+  cx.fillStyle = PNG.lgray; cx.font = '10px Arial'; cx.textAlign = 'center'; cx.textBaseline = 'top';
+  cx.fillText('Volume (lots)  ← Buy (Hit Bid)   Sell (Lift Ask) →',
+              plotX+plotW/2, plotY+plotH+22);
+
+  // Legend
+  cx.font = 'bold 10px Arial'; cx.textAlign = 'left'; cx.textBaseline = 'middle';
+  cx.fillStyle = AGG.buy; cx.fillRect(x0+6, y0-8, 14, 3);
+  cx.fillStyle = PNG.dark; cx.fillText('Buy (Hit Bid)', x0+26, y0-6);
+  cx.fillStyle = AGG.sell; cx.fillRect(x0+140, y0-8, 14, 3);
+  cx.fillStyle = PNG.dark; cx.fillText('Sell (Lift Ask)', x0+160, y0-6);
 }
 
 loadCatalog();

@@ -5,6 +5,7 @@ All GET; Cloudflare-fronted; freshness envelope mirrors the VLM gateway
 convention (source / stale / stale_age_seconds surfaced on every response).
 """
 
+import time
 from datetime import datetime, timezone
 
 from flask import Blueprint, current_app, jsonify, request
@@ -174,6 +175,122 @@ def profile(cmd):
         return _respond(payload, dates, cmd)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
+
+
+@bp.get('/<cmd>/side')
+def side(cmd):
+    """One aggressor split (buy/sell/unsided) per session date, over the
+    resolved window (night/day/full/custom) -- the AGGRESSOR TIME SERIES
+    view. Aggressor-tagged outrights only, same base as
+    session_render.aggressor_split; a Bloomberg seed-era date returns 100%
+    unsided (the seed carries no aggressor stamp) and is reported as such,
+    never hidden. Contracts filter applies; trade-type filter does not --
+    the base is always outright by construction."""
+    cmd = cmd.upper()
+    dates = _dates_param(cmd)
+    if not dates:
+        return jsonify({'error': 'date=YYYY-MM-DD or from=&to= required'}), 400
+    try:
+        contracts = _csv_param('contracts')
+        preset = request.args.get('preset') or 'full'
+
+        cutoff = repo.bloomberg_cutoff(_db(), cmd)
+        per_date, windows = {}, {}
+        for d in dates:
+            w = win.resolve(d, preset=preset,
+                            start=request.args.get('start'),
+                            end=request.args.get('end'))
+            windows[d] = w
+            src = 'bloomberg' if (cutoff and d <= cutoff) else None
+            per_date[d] = repo.side_profile(_db(), cmd, w['start'], w['end'],
+                                            contracts=contracts,
+                                            session_date=d, source=src)
+        payload = {'commodity': cmd, 'dates': dates, 'preset': preset,
+                  'per_date': per_date, 'windows': windows,
+                  'freshness': _freshness(cmd, dates)}
+        return _respond(payload, dates, cmd)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+
+_VAP_INTERVALS = (0.01, 0.05, 0.10, 0.25, 1.00)
+_VAP_MAX_DAYS = 31   # nobody should be able to ask for a year of ticks
+
+
+@bp.get('/<cmd>/vap')
+def volume_at_price(cmd):
+    """Aggressor split by PRICE LEVEL for ONE contract, one date or a bounded
+    range -- the VOLUME AT PRICE view. Reads ticks directly (minute_agg/bar5m
+    carry no price column); the price interval is a render-time choice, never
+    baked into the archive. See repo.volume_at_price for the SQL-bucketing
+    and side-resolution contract.
+
+    Every date in the requested range that has ZERO tick rows for this
+    contract is reported in `no_tick_data_dates` -- ticks coverage is sparse
+    before ~2026-07-06 (a partial capture window, separate from the
+    bar5m/Bloomberg seed era used by every other view) and a range reaching
+    into it must say so plainly rather than render a partial distribution as
+    if it were complete."""
+    cmd = cmd.upper()
+    ice_code = (request.args.get('contract') or '').strip().upper()
+    if not ice_code:
+        return jsonify({'error': 'contract=<ICE_CODE> required (one contract '
+                                 'at a time -- volume at price across '
+                                 'contracts is not meaningful)'}), 400
+
+    dates = _dates_param(cmd)
+    if not dates:
+        return jsonify({'error': 'date=YYYY-MM-DD or from=&to= required'}), 400
+    date_from, date_to = dates[0], dates[-1]
+    span_days = len(dates)
+    if span_days > _VAP_MAX_DAYS:
+        return jsonify({'error': f'range too wide ({span_days} sessions); '
+                                 f'max {_VAP_MAX_DAYS} sessions per request'}), 400
+
+    try:
+        interval = float(request.args.get('interval', 0.05))
+    except ValueError:
+        return jsonify({'error': 'interval must be numeric'}), 400
+    if round(interval, 10) not in _VAP_INTERVALS:
+        return jsonify({'error': f'interval must be one of {_VAP_INTERVALS}'}), 400
+
+    preset = request.args.get('preset') or 'full'
+    start_hhmm = request.args.get('start')
+    end_hhmm = request.args.get('end')
+
+    db = _db()
+    have_dates = set(db.q(
+        'SELECT DISTINCT session_date FROM ticks WHERE commodity=%s '
+        'AND ice_code=%s AND session_date >= %s AND session_date <= %s',
+        (cmd, ice_code, date_from, date_to)))
+    have_dates = {d for (d,) in have_dates}
+    no_tick_data_dates = [d for d in dates if d not in have_dates]
+
+    t0 = time.time()
+    result = repo.volume_at_price(db, cmd, ice_code, date_from, date_to,
+                                  interval=interval, preset=preset,
+                                  start_hhmm=start_hhmm, end_hhmm=end_hhmm)
+    elapsed_ms = round((time.time() - t0) * 1000, 1)
+
+    payload = {
+        'commodity': cmd, 'contract': ice_code,
+        'dates': dates, 'date_from': date_from, 'date_to': date_to,
+        'preset': preset, 'interval': interval,
+        'no_tick_data_dates': no_tick_data_dates,
+        'query_ms': elapsed_ms,
+        # ICE's own chart labels from the AGGRESSOR'S ACTION (Lift the Ask =
+        # that print's aggressor bought; Hit the Bid = that print's aggressor
+        # sold). VLM's pinned mapping (ingest/aggressor.py, ICE ticket
+        # 0903465452) is SetByBid->BUY, SetByAsk->SELL -- so on THIS card,
+        # ICE's "Hit (Bid)" bucket is VLM Buy and ICE's "Lift (Ask)" bucket is
+        # VLM Sell. Same trades, opposite-end naming; stated once here so a
+        # reader is never guessing which convention the numbers below use.
+        'perspective': 'VLM aggressor mapping (ICE ticket 0903465452): '
+                       'Hit (Bid) = Buy, Lift (Ask) = Sell',
+        **result,
+        'freshness': _freshness(cmd, dates),
+    }
+    return _respond(payload, dates, cmd)
 
 
 @bp.get('/<cmd>/contracts')

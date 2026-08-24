@@ -7,6 +7,7 @@ Sub-minute / non-minute-aligned windows fall back to a ticks scan (rare).
 
 from typing import Optional
 
+from ingest.aggressor import BUY, SELL, UNSIDED, side_for_conditions
 from ingest.classifier import clean_split, excluded_sql
 from store.db import Db
 
@@ -223,6 +224,203 @@ def profile(db: Db, commodity: str, start: str, end: str, bucket_minutes,
     if full:
         return _collapse(rows, start)
     return _fold(rows, bucket_minutes)
+
+
+def side_profile(db: Db, commodity: str, start: str, end: str,
+                 contracts: Optional[list] = None,
+                 session_date: Optional[str] = None,
+                 source: Optional[str] = None) -> dict:
+    """Aggressor split for ONE session's window: {side: {lots, prints}}.
+
+    Aggressor-tagged OUTRIGHTS only (primary_type='outright'), same base as
+    session_render.aggressor_split -- EFS, EFP, block, leg and cancelled are
+    all out by construction (they carry no aggressor stamp). Reads minute_agg
+    (ICE era) or bar5m (source='bloomberg', seed era) -- never ticks, so this
+    stays a query over the pre-aggregated grain like every other profile call.
+
+    The Bloomberg seed writes side='unsided' for every row (no aggressor was
+    captured in that rollup) -- so a seed-era date returns 100% unsided here.
+    That is an honest absence, not a bug; the caller must show it, never hide
+    or backfill it.
+    """
+    cf, cp = _contract_filter(contracts)
+    where = " AND primary_type='outright'" + cf
+
+    if source == 'bloomberg':
+        rows = db.q(
+            "SELECT side, SUM(sum_size), SUM(trade_count) FROM bar5m"
+            " WHERE source='bloomberg' AND commodity=%s AND session_date=%s"
+            ' AND bucket_ts >= %s AND bucket_ts < %s' + where
+            + ' GROUP BY side',
+            [commodity.upper(), session_date, start[:16], end[:16]] + cp)
+    else:
+        rows = db.q(
+            'SELECT side, SUM(sum_size), SUM(trade_count) FROM minute_agg'
+            ' WHERE commodity=%s AND minute_ts >= %s AND minute_ts < %s'
+            + where + ' GROUP BY side',
+            [commodity.upper(), start[:16], end[:16]] + cp)
+
+    by = {s: {'lots': float(l or 0), 'prints': int(n or 0)} for s, l, n in rows}
+    for s in ('buy', 'sell', 'unsided'):
+        by.setdefault(s, {'lots': 0.0, 'prints': 0})
+
+    base = by['buy']['lots'] + by['sell']['lots']
+    out = {
+        'base_lots': base,
+        'buy': dict(by['buy']), 'sell': dict(by['sell']),
+        'unsided': dict(by['unsided']),
+        'outright_total': base + by['unsided']['lots'],
+    }
+    for side in ('buy', 'sell', 'unsided'):
+        d = out[side]
+        d['pct_of_base'] = (100.0 * d['lots'] / base) if base else None
+        d['clip'] = (d['lots'] / d['prints']) if d['prints'] else None
+    out['unsided']['pct_of_base'] = None      # never expressed against the base
+    # CONSERVATION: buy + sell + unsided == the outright total. Same standard
+    # as store/session_render.py's aggressor_split -- a partition that stops
+    # summing is a defect that would otherwise ship as a quietly wrong number.
+    assert abs(out['buy']['lots'] + out['sell']['lots']
+               + out['unsided']['lots'] - out['outright_total']) < 0.0001
+    return out
+
+
+def volume_at_price(db: Db, commodity: str, ice_code: str,
+                    date_from: str, date_to: str,
+                    interval: float = 0.05,
+                    preset: str = None, start_hhmm: str = None,
+                    end_hhmm: str = None) -> dict:
+    """Aggressor split by PRICE LEVEL, one contract, over [date_from, date_to].
+
+    Reads ticks directly -- minute_agg/bar5m carry no price column, so this
+    is a different grain from every other query in this module. BUCKET AND
+    AGGREGATE IN SQL: the price bucket and the GROUP BY both happen in the
+    query, so only (bucket, conditions_raw) rows cross the wire, never raw
+    ticks. conditions_raw is remapped to a side in PYTHON, but through
+    ingest.aggressor.side_for_conditions -- the ONE resolver -- never by a
+    second SetByBid/SetByAsk->buy/sell mapping written here (that pattern is
+    what tests.test_aggressor_side.TestOneRulingOneMechanism guards against).
+    Only 'outright' primary_type carries a real side (aggressor base rule,
+    same as session_render.aggressor_split / repo.side_profile) so the WHERE
+    clause is filtered there directly -- no non-outright conditions_raw ever
+    reaches side_for_conditions from this path.
+
+    A window preset/custom range is applied per print via exchange_time, NOT
+    via minute-bucket alignment (ticks has no minute_ts) -- night/day/full
+    all narrow the same ticks scan.
+
+    VWAP is its OWN exact SQL aggregate (SUM(price*size)/SUM(size) over the
+    unbucketed rows) -- deriving it from bucket midpoints would introduce
+    bucketing error the order does not ask for.
+
+    CLIP AT THE PRICE LEVEL: MEASURED AND CUT, 2026-08-24
+    -------------------------------------------------------
+    Clip (lots/prints) is reported per SESSION (buy/sell/unsided below) but
+    NOT per price level. Measured on CTZ6, 2026-08-19/20/21, 0.05 bucket, full
+    window: 80 of 85 levels carry 10+ prints on both sides. Of those, 20
+    diverge clip >=1.5x between sides. In EVERY ONE of those 20, the
+    higher-clip side is also the higher-lots side -- zero exceptions. Below
+    1.5x, clip-heavy and lots-heavy agree only 57/80 (71%) across all liquid
+    levels, and every disagreement sits in that near-parity band (noise, not
+    signal). The largest clip readings are not a thin-bucket artifact either:
+    the top-20 by value span 25 to 996 prints, median 214, close to the
+    all-levels median of 254.
+
+    RULING (Lou, 2026-08-24): clip restates lots on exactly the levels where
+    it has anything to say, so it is redundant at this grain and DROPPED from
+    the per-level table (out_levels below carries lots only, no clip, no
+    prints). Clip is KEPT at session level -- 1.42 vs 1.31 was the original
+    observation that started this workstream, and a session-level character
+    summary is a different job from a per-level signal. DO NOT RE-ADD a clip
+    column to out_levels without re-running this measurement; the finding
+    could change at a different interval or a different sample.
+
+    (An earlier check quoting 88.70 on CTZ6 08-21 read 1.69 vs 2.77 -- that
+    was the 0.01-tick single-session figure, quoted against the 0.05
+    three-session frame that ships. At the shipping grain 88.70 reads 1.39 vs
+    1.45 and does not clear the 1.5x threshold. Recorded so nobody re-derives
+    that wrong number a second time.)
+
+    Returns {'levels': [{'price', 'buy': {'lots'}, 'sell': {'lots'},
+    'unsided': {'lots'}}, ...], 'buy'/'sell'/'unsided': {lots, prints, clip}
+    (session totals), 'vwap', 'outright_total'}.
+    """
+    where = ("commodity = %s AND ice_code = %s "
+             "AND session_date >= %s AND session_date <= %s "
+             "AND primary_type = 'outright'")
+    params = [commodity.upper(), ice_code.upper(), date_from, date_to]
+
+    if preset in ('night', 'day'):
+        # ticks.window_preset is stamped per-row at ingest (the same column
+        # aggressor_by_window already filters on) -- reuse it rather than
+        # re-deriving night/day boundaries from exchange_time a second place.
+        where += ' AND window_preset = %s'
+        params.append(preset)
+    elif start_hhmm and end_hhmm:
+        # Custom clock-time window: ticks has no minute_ts to align to via
+        # api.windows, so a custom range is expressed directly against
+        # exchange_time's HH:MM slice.
+        where += (" AND substr(exchange_time, 12, 5) >= %s"
+                  ' AND substr(exchange_time, 12, 5) < %s')
+        params.append(start_hhmm)
+        params.append(end_hhmm)
+    # preset == 'full' (or none given): no window narrowing, matches every
+    # print in the date range -- 'full' already is the whole in-session span.
+
+    rows = db.q(f"""
+        SELECT ROUND(price / %s) * %s AS bucket, conditions_raw,
+               SUM(size), COUNT(*)
+        FROM ticks WHERE {where}
+        GROUP BY bucket, conditions_raw
+        ORDER BY bucket
+    """, [interval, interval] + params)
+
+    levels = {}
+    totals = {BUY: [0.0, 0], SELL: [0.0, 0], UNSIDED: [0.0, 0]}
+    for bucket, cond, size, n in rows:
+        side = side_for_conditions('outright', cond)
+        d = levels.setdefault(bucket, {BUY: [0.0, 0], SELL: [0.0, 0], UNSIDED: [0.0, 0]})
+        d[side][0] += float(size or 0)
+        d[side][1] += int(n or 0)
+        totals[side][0] += float(size or 0)
+        totals[side][1] += int(n or 0)
+
+    def _side_dict(pair):
+        lots, prints = pair
+        return {'lots': lots, 'prints': prints,
+                'clip': (lots / prints) if prints else None}
+
+    def _lots_only(pair):
+        # Per-level shape: lots only. See the CLIP AT THE PRICE LEVEL note
+        # above -- clip/prints are redundant here, dropped after measurement.
+        return {'lots': pair[0]}
+
+    out_levels = [
+        {'price': price,
+         'buy': _lots_only(d[BUY]), 'sell': _lots_only(d[SELL]),
+         'unsided': _lots_only(d[UNSIDED])}
+        for price, d in sorted(levels.items())
+    ]
+    outright_total = sum(totals[s][0] for s in (BUY, SELL, UNSIDED))
+    # CONSERVATION: summed across every price level, buy + sell + unsided ==
+    # the outright total for the same selection. Same standard as
+    # session_render.aggressor_split / repo.side_profile.
+    assert abs(sum(lv['buy']['lots'] + lv['sell']['lots'] + lv['unsided']['lots']
+                  for lv in out_levels) - outright_total) < 0.0001
+
+    vwap_row = db.q(f"""
+        SELECT SUM(price * size), SUM(size) FROM ticks WHERE {where}
+    """, params)[0]
+    vwap_num, vwap_den = vwap_row
+    vwap = (float(vwap_num) / float(vwap_den)) if vwap_den else None
+
+    return {
+        'levels': out_levels,
+        'buy': _side_dict(totals[BUY]), 'sell': _side_dict(totals[SELL]),
+        'unsided': _side_dict(totals[UNSIDED]),
+        'outright_total': outright_total,
+        'vwap': vwap,
+        'interval': interval,
+    }
 
 
 def traded_contracts(db: Db, commodity: str, session_date: str,

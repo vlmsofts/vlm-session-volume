@@ -229,6 +229,65 @@ class TestUnexpectedTokensAreFlagged:
         assert side_for_conditions('outright', 'RFCCross') == UNSIDED
 
 
+class TestSideProfile:
+    """repo.side_profile -- the aggressor time series view's query.
+
+    Same base as session_render.aggressor_split (aggressor-tagged outrights
+    only), but window-bounded and source-aware like window_sum/profile, so a
+    range of session dates can be queried one call per date the same way the
+    dashboard's other range views already do.
+    """
+
+    def test_matches_aggressor_split_on_the_full_window(self, db):
+        out = repo.side_profile(db, CMD, START, END, session_date=SESS)
+        assert out['base_lots'] == BUY_LOTS + SELL_LOTS
+        assert out['buy']['lots'] == BUY_LOTS
+        assert out['sell']['lots'] == SELL_LOTS
+        assert out['unsided']['lots'] == OUTRIGHT_UNSIDED
+        assert out['outright_total'] == OUTRIGHT_TOTAL
+
+    def test_conservation_buy_sell_unsided_equals_outright_total(self, db):
+        out = repo.side_profile(db, CMD, START, END, session_date=SESS)
+        assert abs(out['buy']['lots'] + out['sell']['lots']
+                   + out['unsided']['lots'] - out['outright_total']) < 0.0001
+
+    def test_clip_is_lots_per_print(self, db):
+        out = repo.side_profile(db, CMD, START, END, session_date=SESS)
+        assert out['buy']['clip'] == BUY_LOTS / 1        # one BUY print
+        assert out['sell']['clip'] == SELL_LOTS / 1       # one SELL print
+
+    def test_unsided_pct_of_base_is_never_expressed(self, db):
+        out = repo.side_profile(db, CMD, START, END, session_date=SESS)
+        assert out['unsided']['pct_of_base'] is None
+
+    def test_a_window_with_no_rows_returns_honest_zeros_not_an_error(self, db):
+        out = repo.side_profile(db, CMD, '1999-01-01T00:00:00', '1999-01-02T00:00:00',
+                                session_date='1999-01-01')
+        assert out == {
+            'base_lots': 0.0,
+            'buy': {'lots': 0.0, 'prints': 0, 'pct_of_base': None, 'clip': None},
+            'sell': {'lots': 0.0, 'prints': 0, 'pct_of_base': None, 'clip': None},
+            'unsided': {'lots': 0.0, 'prints': 0, 'pct_of_base': None, 'clip': None},
+            'outright_total': 0.0,
+        }
+
+    def test_bar5m_bloomberg_source_is_honest_all_unsided(self, db):
+        """The Bloomberg seed writes side='unsided' for every row (no
+        aggressor was ever captured for that era) -- this must come back as a
+        stated 100% unsided, never a fabricated split and never hidden."""
+        from ingest.bar5m import replace_bloomberg_day
+        replace_bloomberg_day(db, CMD, SESS, 'CTZ6', 'CTDEC1',
+                              {('2026-07-01T21:00', 'outright'): (OUTRIGHT_TOTAL, 3)})
+        out = repo.side_profile(db, CMD, START, END, session_date=SESS,
+                                source='bloomberg')
+        assert out['base_lots'] == 0.0
+        assert out['buy']['lots'] == 0.0
+        assert out['sell']['lots'] == 0.0
+        assert out['unsided']['lots'] == OUTRIGHT_TOTAL
+        assert out['buy']['pct_of_base'] is None
+        assert out['sell']['pct_of_base'] is None
+
+
 class TestOneRulingOneMechanism:
     """No second copy of the side rule anywhere in the tree."""
 
