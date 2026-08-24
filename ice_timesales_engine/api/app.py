@@ -24,7 +24,14 @@ def create_app(database_url: str = None) -> Flask:
     # long-lived server keeps serving the dashboard.html it read at startup and
     # edits to the file are invisible until the process restarts.
     app.config['TEMPLATES_AUTO_RELOAD'] = True
-    app.config['DB'] = connect(database_url)
+    # read_only=True -> autocommit. This connection lives for the whole
+    # process and NEVER writes (12 read call sites in routes_query, zero
+    # exec/execmany/commit). Without autocommit every SELECT would open a
+    # transaction nothing ever closes, leaving the connection
+    # `idle in transaction` holding AccessShareLock on the tables it read --
+    # which blocked the 2026-08-24 side migration twice and prevents VACUUM
+    # from reclaiming dead rows. See DEFECT_IDLE_IN_TRANSACTION.md.
+    app.config['DB'] = connect(database_url, read_only=True)
 
     from api.routes_query import bp as query_bp
     app.register_blueprint(query_bp)

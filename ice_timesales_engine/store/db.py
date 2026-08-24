@@ -22,14 +22,35 @@ def _is_postgres(url: str) -> bool:
 
 
 class Db:
-    """Thin dual-dialect wrapper. One instance per process is fine."""
+    """Thin dual-dialect wrapper. One instance per process is fine.
 
-    def __init__(self, database_url: str = None):
+    read_only=True puts a Postgres connection in AUTOCOMMIT. Pass it for any
+    long-lived reader -- the API holds one Db for the life of the process, and
+    without autocommit psycopg opens a transaction on the first SELECT and
+    holds it until an explicit commit/rollback that a read path never makes.
+    The connection then sits `idle in transaction` indefinitely, keeping
+    AccessShareLock on every table it touched. That is not theoretical: it
+    blocked the 2026-08-24 `side` migration twice at the 2min statement_timeout
+    (pid 329945, open 1h50m), and an open snapshot also pins the xmin horizon
+    so VACUUM cannot reclaim the dead rows the daily delete-and-reinsert
+    produces. See DEFECT_IDLE_IN_TRANSACTION.md.
+
+    Autocommit rather than a rollback-on-teardown hook because the API never
+    writes -- 12 read call sites, zero exec/execmany/commit (grep-verified).
+    There is no transaction worth keeping open, so the honest fix is to not
+    open one. A teardown hook would leave the transaction open for the whole
+    request and depend on every future path remembering to close it.
+
+    SQLite is unaffected: it does not hold a transaction open for reads.
+    """
+
+    def __init__(self, database_url: str = None, read_only: bool = False):
         url = database_url if database_url is not None else config.DATABASE_URL
         self.is_postgres = _is_postgres(url)
+        self.read_only = read_only
         if self.is_postgres:
             import psycopg
-            self.conn = psycopg.connect(url)
+            self.conn = psycopg.connect(url, autocommit=read_only)
         else:
             path = url or config.DEFAULT_SQLITE_PATH
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -88,7 +109,12 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
 
-def connect(database_url: str = None) -> Db:
-    db = Db(database_url)
+def connect(database_url: str = None, read_only: bool = False) -> Db:
+    """Open a Db and ensure the schema exists.
+
+    read_only=True -> autocommit on Postgres. Use it for long-lived readers
+    (the API); leave it off for the ingest jobs, which write in transactions.
+    """
+    db = Db(database_url, read_only=read_only)
     db.init_schema()
     return db

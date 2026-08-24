@@ -692,3 +692,52 @@ runs: single-commodity and the full 4-commodity batch both exit 0, and
 verification stays green afterward.
 
 Suite: 159 passed.
+
+---
+
+## 2026-08-24 -- FIXED the idle-in-transaction leak (autocommit)
+
+Lou withdrew the earlier "file, do not fix" ruling: the parked item was
+"freshness() leaks one transaction", but the investigation found NO read path
+in api/ ever commits, rolls back or closes -- a larger defect that should not
+have inherited the parked status.
+
+**Chosen: (b) AUTOCOMMIT via a read_only flag. Rejected (a) rollback-on-
+teardown.** The API never writes (12 read call sites, zero exec/execmany/
+commit, grep-verified). There is no transaction worth keeping open, so the
+honest fix is to not open one. A teardown hook would still open a transaction
+per request and would depend on every future path remembering to route through
+it -- the same "everyone must remember" class that caused the defect.
+Autocommit is a property of the CONNECTION, so it covers all 12 paths and every
+path added later.
+
+`store/db.py`: Db(read_only=False) / connect(read_only=False); read_only opens
+psycopg with autocommit=True. `api/app.py` is the ONE opt-in caller. All three
+ingest jobs call bare connect() and keep the transactional default their
+delete-and-reinsert idempotency needs.
+
+**Found while probing, sharper than the earlier report:** the connection was
+already idle-in-transaction BEFORE any read -- init_schema() itself left it
+open. Autocommit fixes that too.
+
+**Proven through the REAL Flask app** (create_app + test client), observed from
+a separate connection: after driving every real route, state='idle',
+in_transaction=False, locks on minute_agg/bar5m NONE, and 0 idle-in-transaction
+sessions database-wide. Before the fix the same probe showed 'idle in
+transaction' with AccessShareLock on both tables.
+
+**Endpoint behaviour unchanged:** /window returning 400 without preset is
+PRE-EXISTING (preset is required; with preset=day it is 200), not caused by
+this change. A real write path (daily_ingest CT) still runs correctly.
+
+**BLOAT CHECKED, NOT MATERIAL, NO VACUUM RUN.** minute_agg and ticks are at 0
+dead tuples; bar5m 19,978 dead / 3.1%; the two small tables show 17-23% on
+trivial counts (412 and 67 rows). Autovacuum ran on both large tables TODAY at
+15:41/15:43, minutes after pid 329945 was terminated -- consistent with the
+leak having pinned the xmin horizon and vacuum catching up once released.
+
+**(d) idle_in_transaction_session_timeout NOT touched**, still parked -- it is
+a server-level decision.
+
+Suite: 165 passed (6 new, sabotage-verified: removing read_only=True from
+api/app.py turns test_create_app_builds_a_read_only_db red).
