@@ -10,8 +10,13 @@ Key design:
   - Calendar-locked generics CTDEC1/CTMAR2/CTMAY1/CTJUL2 etc. name "the Nth
     contract of that calendar month forward from the as-of date."
   - The generic NEVER dies — it represents the slot, not the contract.
-  - Roll calendar: a futures month rolls off the generic board at its first-notice /
-    expiry. For an indefinite history file we store:
+  - Roll calendar: a futures month rolls off the generic board at its FIRST
+    NOTICE DAY, and that date comes from expiry_source (gateway -> local CSV ->
+    vendored historical), NEVER from calendar arithmetic. Until 2026-09-02 this
+    comment said first-notice while the code below rolled at the 1st of the
+    delivery month, five to eight days late, which mislabelled the front-month
+    generic for ~6 sessions per roll (25,237 archived bar5m rows). For an
+    indefinite history file we store:
       ice_code       e.g. CTZ6
       generic_code   e.g. CTDEC1
       delivery_year  e.g. 2026  (4-digit — decade-safe)
@@ -30,10 +35,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 from config import CT_ACTIVE_MONTH_CODES, CT_EXCLUDED_PREFIXES, CT_SERIAL_TO_FUTURES
+from expiry_source import ExpiryUnavailable, first_notice_day
 
 # ---------------------------------------------------------------------------
 # MONTH TABLES (self-contained — not imported from old repo)
@@ -183,9 +189,20 @@ def resolve_generic(generic_code: str, as_of_date) -> ContractInfo:
     Logic: CTDEC1 = the 1st December >= as_of_date (i.e. the front December).
     CTMAR2 = the 2nd March >= as_of_date.
 
-    Roll rule: a contract is "available" if its delivery month has NOT yet
-    started (delivery_date = 1st of the delivery month).  Once that month
-    begins, the generic rolls to the next year's contract.
+    Roll rule: a contract is "available" until its FIRST NOTICE DAY, read from
+    expiry_source (gateway -> local CSV -> vendored historical). On and after
+    FND the generic rolls to the next year's contract.
+
+    FND, not the 1st of the delivery month. Measured on this repo's own archive
+    2026-09-02: CTN6 (FND 2026-06-24) collapses from 132 five-minute bars on
+    06-23 to 5 on its FND, and CTH6/CTK6 show the same cliff at theirs. The old
+    1st-of-month rule kept an expiring contract in slot 1 for the five to eight
+    sessions between FND and delivery, so front-month volume and the price
+    overlay both pointed at a contract already off the board.
+
+    If no authority can date a contract, expiry_source raises ExpiryUnavailable
+    and we let it propagate: guessing a roll silently mislabels stored volume,
+    and a mislabel is indistinguishable from correct data downstream.
     """
     as_of = _coerce_date(as_of_date)
     body = generic_code.strip().upper()
@@ -202,14 +219,53 @@ def resolve_generic(generic_code: str, as_of_date) -> ContractInfo:
     month_num, month_name = _WORD_META[word]
     month_letter = _MONTH_LETTER[month_num]
 
-    # Find the Nth delivery year >= as_of where that month has not yet rolled
-    # A month is "live on the generic board" until the 1st of the delivery month.
+    # Find the Nth delivery year >= as_of where that month has NOT yet rolled.
+    # A month is "live on the generic board" until its FIRST NOTICE DAY.
     count = 0
     year = as_of.year
-    # Start from this year; if we've already passed the delivery month this year, skip ahead
+    # Start a year back: a contract whose delivery month is behind us can still
+    # be pre-FND only in pathological data, but starting at as_of.year would
+    # skip a contract whose FND is later this year than today's date.
     while True:
-        delivery_start = date(year, month_num, 1)
-        if delivery_start >= as_of:
+        candidate = f'{prefix}{month_letter}{year % 100:02d}'
+        try:
+            rolled = as_of >= first_notice_day(candidate)
+        except ExpiryUnavailable:
+            # No authority can date this contract. Only two cases are safe
+            # to decide without one, and BOTH are deliberately conservative.
+            #
+            # An earlier version of this branch assumed "FND always falls
+            # before the delivery month begins". That is FALSE: the live
+            # gateway shows 12 SB contracts whose FND lands ON or AFTER the
+            # 1st of their delivery month (SBV26 fnd 2026-10-01 = delivery
+            # 1st; SBK27 fnd 2027-05-03 vs delivery start 2027-05-01). CT,
+            # KC and CC show none. Assuming the CT shape held everywhere
+            # would have called a live SB contract rolled.
+            #
+            # So the certain cases are bounded by the delivery month itself,
+            # with a full month of slack on each side -- no commodity's FND
+            # sits that far from its delivery month in any authority row:
+            #   * the whole delivery month is behind us  -> certainly ROLLED
+            #   * delivery is more than a month ahead    -> certainly LIVE
+            # Anything nearer the boundary is refused. Guessing a roll
+            # silently mislabels stored volume, and Lou's 5-business-day
+            # shape rule is a CROSS-CHECK, never a source
+            # (EXPIRY_AUTHORITY_ACCESS_PROTOCOL.md section 5).
+            delivery_start = date(year, month_num, 1)
+            delivery_end = (date(year + (month_num == 12), (month_num % 12) + 1, 1)
+                            - timedelta(days=1))
+            if as_of > delivery_end:
+                rolled = True           # delivery month wholly past: gone under any rule
+            elif delivery_start - as_of > timedelta(days=31):
+                rolled = False          # over a month out: no FND can have passed
+            else:
+                raise ExpiryUnavailable(
+                    f'{candidate} is at or near its delivery month on {as_of} '
+                    f'and no authority carries its first notice day; refusing '
+                    f'to guess a generic slot. Add it to '
+                    f'expiry_source._HISTORICAL_FND with a real sourced date '
+                    f'(ICE page, gateway, or Bloomberg FUT_NOTICE_FIRST).') from None
+        if not rolled:
             count += 1
             if count == position:
                 break

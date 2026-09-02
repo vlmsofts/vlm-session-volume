@@ -27,6 +27,8 @@
                letter-spacing:1.5px; }
   .ctl select, .ctl input { padding:6px 8px; border:1px solid #e5e7eb; border-radius:4px;
                             font-size:13px; font-family:Arial,sans-serif; background:#fff; }
+  .ctl .hint { font-size:9px; color:#999999; letter-spacing:.3px;
+               text-transform:none; font-weight:400; }
   .types { display:flex; gap:8px; flex-wrap:wrap; }
   .types label { font-size:12px; color:#444444; font-weight:600; text-transform:none;
                  letter-spacing:0; display:flex; align-items:center; gap:4px; }
@@ -121,7 +123,8 @@
     </div>
   </div>
   <div class="ctl"><label>Contracts</label>
-    <select id="contracts" multiple size="3" style="min-width:120px"></select></div>
+    <select id="contracts" multiple size="7" style="min-width:150px"></select>
+    <span class="hint">ctrl+click = several &middot; none = all</span></div>
   <div class="ctl"><label>Bucket</label>
     <select id="bucket">
       <option value="1m">1 min</option>
@@ -366,13 +369,18 @@ function runQuery() {
         .then(function(r){ return r.json(); })
     : Promise.resolve(null);
   // Price overlay is ONLY meaningful for Daily Totals (one point per session).
-  // Fetched from the ICE eod capture root (futures_settle_<date>.csv, the
-  // same read-only source this engine's blotter ingest already uses) --
-  // a failure here must be VISIBLE (priceErr), never a silently blank line.
+  // Served by /price, which reads the ICE eod capture root first
+  // (futures_settle_<date>.csv, the same read-only source this engine's
+  // blotter ingest uses for volume) and falls back to the Bloomberg
+  // backfill for pre-capture dates the ICE root cannot serve. A failure
+  // here must be VISIBLE (priceErr), never a silently blank line.
+  //
   // Contract scope MUST match what the volume chart is actually showing:
   // exactly one contract picked -> that contract's price; 0 or several
-  // (incl. 'all') -> there's no single coherent price for a multi-contract
-  // volume sum, so front month is the only sensible fallback.
+  // (incl. 'all') -> no single contract's settle can represent a summed
+  // multi-contract volume, so we show the FRONT MONTH as a price reference
+  // and say so in the label. It is a reference line, not a claim that the
+  // cumulative volume traded at that price.
   var pickedContracts = Array.from(el('contracts').selectedOptions).map(function(o){ return o.value; });
   var priceContractParam = pickedContracts.length === 1 ? '&contract=' + pickedContracts[0] : '';
   var priceq = (view === 'totals')
@@ -400,7 +408,10 @@ function runQuery() {
         // and PNG export so none of them can drift out of sync with what
         // was actually fetched.
         priceInfo.price_label = (pickedContracts.length === 1)
-          ? 'Settle (' + pickedContracts[0] + ')' : 'Settle (front month)';
+          ? 'Settle (' + pickedContracts[0] + ')'
+          : (pickedContracts.length > 1
+              ? 'Settle (front month ref, ' + pickedContracts.length + ' contracts summed)'
+              : 'Settle (front month)');
         // Partial failure: some dates in the range hit a genuine read error
         // (as opposed to an honest "no settle file yet") -- surface that
         // distinction rather than letting it look identical to a normal gap.

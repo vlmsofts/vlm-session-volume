@@ -72,6 +72,27 @@ CT_SERIAL_TO_FUTURES = _vlm.CT_SERIAL_TO_FUTURES       # {'CTU':'CTZ','CTX':'CTZ
 
 ICE_ROOT = os.environ.get('ICE_ROOT', r'C:\Ice eod records')
 
+# ---------------------------------------------------------------------------
+# BLOOMBERG SETTLE BACKFILL (READ-ONLY, CT ONLY)
+# ---------------------------------------------------------------------------
+# The ICE eod capture begins 2026-04-27. Sessions before that have real volume
+# in the archive (Bloomberg-seeded) but NO futures_settle_<date>.csv, so the
+# price overlay was blank for every pre-capture date. This CSV is the same
+# Bloomberg pull that seeded the volume archive and carries px_last back to
+# 2005 -- used ONLY to fill dates the ICE capture cannot serve.
+#
+# Lou ruling 2026-09-02: ICE `Settle` and Bloomberg `px_last` are not the same
+# field, but for a graphical price overlay they are close enough; no per-point
+# source labelling on the chart. The API still reports which source each point
+# came from so the distinction is never LOST, just not rendered.
+#
+# CT ONLY: this file holds CT generics (CTDEC1/CTMAR1/...) and nothing else.
+# KC/CC/SB have no Bloomberg backfill and must stay honestly blank pre-capture.
+BBG_SETTLE_CSV = os.environ.get(
+    'BBG_SETTLE_CSV',
+    os.path.join(VLM_SESSION_VOLUME_REPO, 'cotton_futures_volume_history.csv'))
+BBG_SETTLE_COMMODITIES = frozenset({'CT'})
+
 # Per-commodity closed-dates. CT is authoritative from the reused config; the
 # softs trade the same IFUS holiday calendar -- reuse until a per-commodity
 # calendar is sourced.
