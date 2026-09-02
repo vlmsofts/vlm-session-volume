@@ -97,6 +97,19 @@ _HISTORICAL_FND = {
     # must be datable or every Dec-2025 row refuses. Same Bloomberg pull.
     'CTZ25': ('2025-11-21', '2025-12-08', 'bloomberg FUT_NOTICE_FIRST 2026-09-02'),
     'CTV25': ('2025-09-24', '2025-10-09', 'bloomberg FUT_NOTICE_FIRST 2026-09-02'),
+    # KC/CC/SB expired months. The live archive is NOT CT-only: it carries
+    # coffee, cocoa and sugar too, and these four contracts block 231,122 rows
+    # across bar5m/minute_agg/ticks. Same pull, same cross-validation (CCZ26,
+    # KCZ26, SBV26 and SBH27 each matched the gateway exactly).
+    #
+    # Note SB: FND lands AFTER last trade day (SBK26 fnd 2026-05-01, ltd
+    # 2026-04-30). That is real, not a transcription slip -- sugar's notice
+    # cycle genuinely runs past the board, which is why no rule may assume
+    # FND precedes either LTD or the delivery month.
+    'CCK26': ('2026-04-24', '2026-05-13', 'bloomberg FUT_NOTICE_FIRST 2026-09-02'),
+    'KCK26': ('2026-04-22', '2026-05-18', 'bloomberg FUT_NOTICE_FIRST 2026-09-02'),
+    'SBK26': ('2026-05-01', '2026-04-30', 'bloomberg FUT_NOTICE_FIRST 2026-09-02'),
+    'SBN26': ('2026-07-01', '2026-06-30', 'bloomberg FUT_NOTICE_FIRST 2026-09-02'),
 }
 
 
