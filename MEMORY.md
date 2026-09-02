@@ -255,3 +255,107 @@ No existing test weakened; the existing `_write_sidecar` helper already writes a
 ### What was NOT touched
 Producer (Options_flow_analyzer) untouched. No computation/RVOL/history/path
 changes. Only: this MEMORY note, the read-time guard, and the 2 tests.
+
+---
+
+## 2026-09-02 — Price overlay gaps + the FND roll defect (Opus 5)
+
+Started as "why is there no price data on most of the dates" on the session
+volume chart. Ended up closing three distinct defects, two of them older than
+the reported symptom.
+
+### Worked on / Completed
+
+**1. Price overlay — 88 of 173 sessions priced, now 167 of 167.**
+`api/price.py` read settle only from the ICE eod capture root, which begins
+2026-04-27, so everything before it drew nothing.
+
+The first fix (Bloomberg as a pre-capture *backfill*, ICE as authority) was
+WRONG and Lou caught it: "ice keeps time and sales for only so long... if you
+need hi lo close volume etc, there are decades of it." The ICE eod root is a
+TIME AND SALES capture with a short retention window — 37 of its 92 CT
+day-folders carry `_BACKFILL.txt`, reconstructed 2026-07-06, and a
+reconstruction only sees contracts still listed the day it runs. That is why
+N26/K26 appear in no May/June folder and the front month drew blank for two
+months. Settle/OHLC/volume is decades-deep reference data with no retention
+limit.
+
+Repointed: **Bloomberg leads, ICE fills only what Bloomberg has not published
+yet** (today's session). Costs nothing in fidelity — CTZ26 settle matched
+Bloomberg CTDEC1 px_last within 0.005 on **87 of 87** ICE day-folders (50 live,
+37 backfilled, zero disagreements).
+
+**2. Contract selector.** Multi-select was already functional but looked
+single-select (`size=3`, no affordance). Widened to 7 with a ctrl+click hint.
+Multi-contract selections previously dropped the price line entirely; they now
+show front month labelled as a reference, not a claim.
+
+**3. The FND roll defect (the real find).** `contract_resolver` rolled a generic
+at `date(year, delivery_month, 1)` while its own header comment claimed
+first-notice. Contracts leave the board at FIRST NOTICE DAY, ~5 business days
+earlier, so for ~6 sessions per roll the front-month generic named a dead
+contract. Not cosmetic: `ice_to_generic` stamps `generic_code` INTO the archive.
+
+New `expiry_source.py` sources FND from the ruled authorities (gateway → local
+`expiry_master.csv` → vendored historical for expired contracts neither
+retains). Holds no expiry facts of its own for a listed contract, surfaces each
+authority's real content age rather than trusting a `stale` flag, and raises
+rather than guessing.
+
+**4. Archive backfill APPLIED** — 47,329 rows across bar5m/minute_agg/ticks,
+plus 402 rows in the by-contract sidecar CSV.
+
+### Decisions made
+
+- **Bloomberg is the PRICE authority; ICE is the TAPE authority.** Lou ruled
+  ICE Settle vs Bloomberg px_last close enough for a graphical overlay, so no
+  per-point source labelling on the chart — but the API still returns `source`
+  so the distinction is never lost.
+- **The Bloomberg session gate stays per-SESSION, not per-contract.** Relaxing
+  it to fill any contract absent from an ICE file was tried and REVERTED: a
+  blank/'N/A' Settle is "absent" by the same test, so it reopens a silent
+  vendor swap on a session ICE did cover. The incomplete-capture gap belongs
+  upstream in the capture, not in a price-layer exception that cannot tell the
+  cases apart. Rationale recorded in the code.
+- **Lou's shape rule** (FND = 5 business days before the 1st business day of the
+  delivery month) is a **CROSS-CHECK, NEVER A SOURCE**. It agrees on 4 of 5
+  checked contracts and misses CTZ26 by a day (Thanksgiving). Business-day math
+  cannot know which holidays ICE observed —
+  `EXPIRY_AUTHORITY_ACCESS_PROTOCOL.md` §5 forbids deriving a contract date
+  from calendar arithmetic.
+- **Vendored historical FNDs are append-only and must be SOURCED**, never
+  computed. Nine contracts vendored (CT H26/K26/N26/Z25/V25, CCK26, KCK26,
+  SBK26, SBN26) from Bloomberg `FUT_NOTICE_FIRST`, each cross-validated against
+  the live gateway on contracts both carry — exact on all.
+- **The local SQLite is a stale CT-only seed. The live store is Supabase**
+  (`DATABASE_URL`, set at OS level) and carries KC/CC/SB as well. Measure scope
+  against the live store, never the seed.
+
+### Rejected
+
+- ICE-as-price-authority (the original design) — retention window makes it
+  structurally unable to answer for expired months.
+- Widening the unknown-contract fallback to keep Dec-2025 rows resolving —
+  solved by sourcing CTZ25's real FND instead of loosening a safety rule.
+
+### Gotchas found (see ERRORS.md)
+
+- SQL placeholders are `%s` ALWAYS; `store/db.py::_sql` translates DOWN to `?`
+  for SQLite. Writing `?` passes a SQLite sandbox and dies on live Postgres.
+- SB genuinely has **FND after LTD** (SBK26 fnd 2026-05-01, ltd 2026-04-30) and
+  12 SB contracts have FND on/after the 1st of the delivery month. No rule may
+  assume FND precedes either.
+- The expiry cache must be keyed PER COMMODITY or the first commodity asked
+  poisons every other one.
+
+### Next session priorities
+
+1. **Verify the expiry refresh fired Friday 2026-09-04** ("VLM ICE Expiry
+   Refresh", desk machine, 07:30 ET). As of 2026-09-02 the gateway read
+   `refreshed_at: 2026-08-03` — 30 days against an 8-day check interval, with
+   `stale: false`. Per protocol §5 a status field is not evidence; check
+   `vlm_cal_expiry_freshness` or the task's actual last-run.
+2. Re-run `jobs/backfill_generic_code.py` after ANY future resolver change — it
+   repairs the DB and the sidecar in one pass and is idempotent.
+3. The ICE capture's incomplete May/June folders (missing live front months)
+   remain an upstream capture issue, unfixed by design.
