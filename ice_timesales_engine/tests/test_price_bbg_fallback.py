@@ -1,23 +1,32 @@
-"""test_price_bbg_fallback.py -- the Bloomberg settle backfill and, above all,
-the SESSION GATE that keeps it out of ICE's way.
+"""test_price_bbg_fallback.py -- the price layer's source precedence.
 
-api/price.py had ZERO test coverage before this file, which is why the blank
-pre-capture price overlay shipped unnoticed (Lou, 2026-09-02: "why is there no
-price data on most of the dates"). The backfill fixes that; these tests pin the
-boundary so the fix cannot rot into a silent vendor swap.
+api/price.py had ZERO test coverage before this file, which is why a blank
+price overlay shipped unnoticed (Lou, 2026-09-02: "why is there no price data
+on most of the dates").
 
-THE RULE UNDER TEST, in one line: Bloomberg fills only sessions the ICE capture
-never took. A session with a settle file is ICE's to answer -- including
-answering "that contract is not on the board", which is a blank, not a gap for
-another vendor to paper over.
+THE RULE UNDER TEST -- CORRECTED 2026-09-02 AFTER LOU'S PUSHBACK:
+Bloomberg leads; the ICE tape capture fills only what Bloomberg has not got.
 
-The near-miss that motivates test_ice_covered_session_never_falls_back: ICE's
-futures_settle_<date>.csv is a snapshot of the contracts on the board, while
-front_generic() names the nearest calendar month whether or not ICE captured
-it. On 2026-05-15 ICE holds Z26/H27/K27/N27/Z27 but the resolver calls CTJUL1
-(N26, already rolled off) the front. A per-CONTRACT fallback therefore fired on
-every overlap-window date, swapping vendor on days ICE fully covers. The gate is
-per-SESSION for exactly that reason.
+The first cut had this backwards, treating the ICE eod root as the settle
+authority and Bloomberg as a mere pre-capture backfill. Lou: "ice keeps time
+and sales for only so long... if you need hi lo close volume etc, there are
+decades of it." That is the whole point:
+
+  * The ICE eod root is a TIME & SALES capture with a short retention window.
+    37 of its 92 CT day-folders carry _BACKFILL.txt (reconstructed 2026-07-06),
+    and a reconstruction only sees contracts still listed the day it runs -- so
+    those folders silently omit already-expired months (N26/K26 are absent from
+    every May/June folder), which is what blanked the front-month overlay.
+  * Settle/OHLC/volume is decades-deep reference data with no retention limit:
+    cotton_futures_volume_history.csv covers all 8 CT generics from 2005.
+
+Measured before the repoint: CTZ26 settle matched Bloomberg CTDEC1 px_last to
+within 0.005 on 87 of 87 ICE day-folders (50 live, 37 backfilled, zero
+disagreements). Same number, vastly deeper history -- so leading with Bloomberg
+costs nothing and closes the gap the ICE capture cannot.
+
+ICE still matters: it is fresh the moment the eod job writes it, so it answers
+for a session Bloomberg has not published yet (typically today's).
 """
 
 import csv
@@ -82,47 +91,64 @@ def write_bbg(path, rows):
 
 
 # ---------------------------------------------------------------------------
-# THE GATE
+# PRECEDENCE: Bloomberg leads, ICE fills the gap
 # ---------------------------------------------------------------------------
 
-def test_ice_covered_session_never_falls_back(ice_root, bbg_csv):
-    """A session ICE captured must NEVER return a Bloomberg price -- not even
-    for a contract missing from that day's file. This is the whole audit
-    finding: the gate is the SESSION, never the contract."""
-    # ICE captured this session, but only far months -- no CTZ6 row at all.
-    write_settle(ice_root, '2026-05-15', [('CT H27', '82.55'), ('CT Z27', '74.79')])
-    # Bloomberg has a tempting price for the very contract ICE lacks.
+def test_bloomberg_leads_when_both_sources_have_the_date(ice_root, bbg_csv):
+    """Both carry the session -> Bloomberg answers.
+
+    Not a downgrade: the two agreed on 87 of 87 real ICE day-folders. Leading
+    with the deeper, retention-free source is what keeps an expired contract
+    from vanishing out of the series."""
+    write_settle(ice_root, '2026-05-15', [('CT Z26', '81.91')])
     write_bbg(bbg_csv, [('2026-05-15', 'CTDEC1', '81.91')])
 
-    assert pm.settle_for('CT', '2026-05-15', ice_code='CTZ6') is None
-
-
-def test_ice_wins_when_both_sources_have_the_date(ice_root, bbg_csv):
-    """Overlap window: ICE's value is returned, Bloomberg's is ignored."""
-    write_settle(ice_root, '2026-05-15', [('CT Z26', '81.91')])
-    write_bbg(bbg_csv, [('2026-05-15', 'CTDEC1', '99.99')])
-
     row = pm.settle_for('CT', '2026-05-15', ice_code='CTZ6')
-    assert row['source'] == 'ice'
+    assert row['source'] == 'bloomberg'
     assert row['settle'] == 81.91
 
 
-def test_blank_settle_field_stays_blank_not_backfilled(ice_root, bbg_csv):
-    """A contract whose Settle is blank/'N/A' is skipped by _read_settle_rows.
-    The session is still ICE-covered, so the answer is a blank -- fabricating
-    one from Bloomberg would be a silent mid-series vendor swap."""
-    write_settle(ice_root, '2026-05-15', [('CT Z26', ''), ('CT H27', '82.55')])
-    write_bbg(bbg_csv, [('2026-05-15', 'CTDEC1', '81.91')])
+def test_contract_missing_from_the_ice_capture_still_prices(ice_root, bbg_csv):
+    """THE DEFECT THAT STARTED THIS. A reconstructed ICE folder omits contracts
+    that had already expired when the backfill ran, so the live front month was
+    simply absent and the overlay drew nothing for all of May and June. Reading
+    price from the retention-free source fixes it outright."""
+    # ICE captured the session but only far months -- no CTN6 row at all.
+    write_settle(ice_root, '2026-05-15', [('CT Z26', '81.91'), ('CT Z27', '74.79')])
+    write_bbg(bbg_csv, [('2026-05-15', 'CTJUL1', '80.61')])
 
-    assert pm.settle_for('CT', '2026-05-15', ice_code='CTZ6') is None
+    row = pm.settle_for('CT', '2026-05-15', ice_code='CTN6')
+    assert row is not None, 'front month must price even when ICE omits it'
+    assert row['settle'] == 80.61
+    assert row['source'] == 'bloomberg'
+
+
+def test_ice_answers_a_session_bloomberg_has_not_got_yet(ice_root, bbg_csv):
+    """Today's session: the eod job has written it but the Bloomberg history
+    has not been refreshed. ICE fills, and says so."""
+    write_settle(ice_root, '2026-09-02', [('CT Z26', '88.89')])
+    write_bbg(bbg_csv, [('2026-09-01', 'CTDEC1', '91.55')])   # nothing for 09-02
+
+    row = pm.settle_for('CT', '2026-09-02', ice_code='CTZ6')
+    assert row['source'] == 'ice'
+    assert row['settle'] == 88.89
+
+
+def test_neither_source_is_an_honest_blank(ice_root, bbg_csv):
+    """An exchange holiday has no settle anywhere. That must render as a gap,
+    never as a carried-forward or invented value."""
+    write_bbg(bbg_csv, [('2026-05-22', 'CTDEC1', '80.00')])   # 05-25 is Memorial Day
+
+    assert pm.settle_for('CT', '2026-05-25', ice_code='CTZ6') is None
 
 
 # ---------------------------------------------------------------------------
-# THE BACKFILL DOING ITS JOB
+# DEEP HISTORY, AND WHAT IT DOES NOT CARRY
 # ---------------------------------------------------------------------------
 
-def test_pre_capture_session_fills_from_bloomberg(ice_root, bbg_csv):
-    """The bug Lou reported: no ICE folder at all -> Bloomberg fills it."""
+def test_session_older_than_the_ice_capture_still_prices(ice_root, bbg_csv):
+    """The bug Lou reported. The ICE capture only reaches back to 2026-04-27;
+    the Bloomberg history reaches 2005, so the chart draws a full line."""
     write_bbg(bbg_csv, [('2026-01-02', 'CTDEC1', '68.22')])
 
     row = pm.settle_for('CT', '2026-01-02', ice_code='CTZ6')
@@ -131,12 +157,14 @@ def test_pre_capture_session_fills_from_bloomberg(ice_root, bbg_csv):
     assert row['settle'] == 68.22
 
 
-def test_bloomberg_row_reports_no_ohlc(ice_root, bbg_csv):
-    """The history file carries no OHLC. Those stay None rather than being
-    invented from the settle."""
+def test_bloomberg_row_carries_its_ohlc(ice_root, bbg_csv):
+    """The history file DOES carry px_open/high/low, so the row reports real
+    OHLC rather than dropping it. A missing column stays None, never invented."""
     write_bbg(bbg_csv, [('2026-01-02', 'CTDEC1', '68.22')])
 
     row = pm.settle_for('CT', '2026-01-02', ice_code='CTZ6')
+    assert row['settle'] == 68.22
+    # write_bbg leaves OHLC blank, so these are honestly absent here.
     assert row['open'] is None and row['high'] is None and row['low'] is None
 
 
@@ -188,17 +216,16 @@ def test_unreadable_bbg_file_degrades_rather_than_raising(ice_root, bbg_csv,
 # SERIES
 # ---------------------------------------------------------------------------
 
-def test_series_mixes_sources_across_the_capture_boundary(ice_root, bbg_csv):
-    """A range spanning the boundary is continuous: Bloomberg before, ICE
-    after, each point labelled with the source it actually came from."""
-    write_settle(ice_root, '2026-04-27', [('CT Z26', '80.97')])
-    write_bbg(bbg_csv, [('2026-04-24', 'CTDEC1', '80.58'),
-                        ('2026-04-27', 'CTDEC1', '99.99')])   # must lose to ICE
+def test_series_reports_the_source_of_every_point(ice_root, bbg_csv):
+    """A range spanning the refresh boundary stays continuous, with each point
+    labelled by where it actually came from."""
+    write_settle(ice_root, '2026-09-02', [('CT Z26', '88.89')])
+    write_bbg(bbg_csv, [('2026-09-01', 'CTDEC1', '91.55')])
 
-    series, errored = pm.settle_series('CT', ['2026-04-24', '2026-04-27'],
+    series, errored = pm.settle_series('CT', ['2026-09-01', '2026-09-02'],
                                        ice_code='CTZ6')
     assert errored == []
-    assert series['2026-04-24']['source'] == 'bloomberg'
-    assert series['2026-04-24']['settle'] == 80.58
-    assert series['2026-04-27']['source'] == 'ice'
-    assert series['2026-04-27']['settle'] == 80.97
+    assert series['2026-09-01']['source'] == 'bloomberg'
+    assert series['2026-09-01']['settle'] == 91.55
+    assert series['2026-09-02']['source'] == 'ice'
+    assert series['2026-09-02']['settle'] == 88.89
