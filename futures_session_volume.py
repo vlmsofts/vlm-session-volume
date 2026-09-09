@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 """
+RETIRED 2026-09-09 (Lou): the futures session-volume engine depended on the RTD volume sidecar written by
+Options_flow_analyzer/price_tape.py, which was retired on 2026-07-02 when the ice_timesales_engine
+(Supabase-backed, night/day/full windows in api/windows.py, served by the VLM gateway) replaced it.
+The VLM_Session_Volume_EOD and VLM_Session_Volume_CaptureCheck scheduled tasks were deleted.
+Kept for reference; not scheduled; do not re-enable without re-sourcing it from the engine.
+
 futures_session_volume.py -- Futures session-window volume engine (Part B).
 
 Data model (RTD-daily architecture, 2026-06-17):

@@ -515,3 +515,8 @@ and the gateway's `/v1/ct/generics/history` current to yesterday's settled
 volume instead of an RTD-derived estimate); leaving it disabled means the seed
 stays at its last manual reseed and the gateway route serves whatever vintage
 that is, with no automatic drift alarm of its own.
+
+## 2026-09-09 (later) — old session-volume tool retired; refresh_seed repointed
+
+**Decided (Lou): retire.** `VLM_Session_Volume_CaptureCheck` exit 2 was correct every day since 2026-07-02: the RTD sidecar (`Options_flow_analyzer/price_tape.py`) it monitored was retired when the ice_timesales_engine took over, so `futures_session_volume.py` produced nothing while its EOD task exited 0. The engine already computes night/day/full windows from the tick feed and the gateway serves them. Deleted tasks `VLM_Session_Volume_EOD` and `VLM_Session_Volume_CaptureCheck`; scripts kept with a RETIRED header. Rejected: re-sourcing the old tool from the engine's bars (rebuilds what the engine does).
+**refresh_seed.py** now resolves `_REPO` relative to its own file = this project folder (confirmed by --dry-run: seed CSV and engine paths both under VLM_Session_Volume_Project). Task `VLM_CT_FutVol_SeedRefresh` stays Disabled; step 2 (engine finalize) is moot now. If Lou wants the Bloomberg generic series (`/v1/ct/generics/history`) current daily, strip step 2 and enable at 09:00 weekdays with the terminal logged in.
