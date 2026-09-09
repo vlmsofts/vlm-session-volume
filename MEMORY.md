@@ -359,3 +359,57 @@ plus 402 rows in the by-contract sidecar CSV.
    repairs the DB and the sidecar in one pass and is idempotent.
 3. The ICE capture's incomplete May/June folders (missing live front months)
    remain an upstream capture issue, unfixed by design.
+
+---
+
+## Session 2026-09-09 -- Bloomberg CT seed CSV now tracked for the gateway
+
+### What was decided
+
+- **`cotton_futures_volume_history.csv` is now committed to the repo**, not
+  gitignored. It was excluded under a "large regenerable Bloomberg seed"
+  comment, but nothing regenerates it in practice: the refresh task
+  (`VLM_CT_FutVol_SeedRefresh`) is Disabled and has never run, and its script
+  (`refresh_seed.py`) points at a non-existent engine path (see Gotchas
+  below) -- so an untracked file was the ONLY copy, unreachable by the VLM
+  gateway. Committed as-is: 44,192 rows, 2005-01-03 to 2026-09-02, 8 CT
+  generics, no secrets found on inspection. `.gitignore`'s comment was
+  reworded (not removed) to record that the seed is committed intentionally
+  and that future reseeds should use `cotton_futures_volume_history_blpapi.py
+  --merge` (upsert) rather than a full rewrite, to keep diffs small.
+- **`ice_timesales_engine/api/price.py` and `futures_session_volume.py` keep
+  reading the local file unchanged.** This was a visibility fix (gateway can
+  now serve the seed from the repo), not a pipeline change -- no code touched,
+  no reader's path or read behavior altered.
+
+### Why
+
+- The gateway can only serve what's in the repo. The seed was the
+  authoritative Bloomberg source for CT settle/volume/OI (price.py's
+  documented price authority) but was invisible to anything reading off
+  GitHub rather than the local disk.
+
+### Rejected
+
+- **Enabling `VLM_CT_FutVol_SeedRefresh` or fixing `refresh_seed.py`** -- out
+  of scope for this fix; noted as an open bug for Lou, not touched.
+- **Committing the two stray untracked root files** (`New Text Document.txt`,
+  `desktop.ini`) -- unrelated to this fix, left untracked.
+
+### Observations for Lou (not acted on)
+
+- **`VLM_Session_Volume_CaptureCheck`'s last scheduled run (2026-09-08 14:40
+  ET) returned exit code 2 (non-zero)**, per `schtasks /Query`. Worth
+  checking the capture-completeness alert it's meant to raise.
+- **`refresh_seed.py` hardcodes `_REPO = Path(r'...\Desktop\vlm_session_volume')`**
+  (note the lowercase/underscore name) for the engine path used in Step 2 --
+  that directory does not exist on this machine; only
+  `VLM_Session_Volume_Project` does. The script would fail at Step 2 even if
+  the task were re-enabled. Not fixed here; scope was the seed CSV only.
+- **`VLM_Session_Volume_Morning` is not a registered scheduled task at all**
+  (confirmed via a full `VLM*` task-name scan) -- `register_and_cleanup_tasks.ps1`
+  deliberately leaves it commented out ("interim no-op until the 14:20
+  boundary exists"). Two of the three originally-assumed live tasks are
+  actually live: `VLM_Session_Volume_EOD` and `VLM_Session_Volume_CaptureCheck`,
+  both confirmed Ready/Enabled after this session's changes; Morning is
+  intentionally off, not broken.
