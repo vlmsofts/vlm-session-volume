@@ -1,8 +1,8 @@
 # ── Live data outputs & permanent history (data, not code) ──
 data/
 
-# ── Large regenerable Bloomberg seed (rebuild via *_blpapi.py --seed) ──
-cotton_futures_volume_history.csv
+# ── Bloomberg seed: committed so the VLM gateway can serve it. Reseed with
+# ── cotton_futures_volume_history_blpapi.py --merge to keep diffs small. ──
 
 # ── Python bytecode / caches ──
 __pycache__/
