@@ -413,3 +413,105 @@ plus 402 rows in the by-contract sidecar CSV.
   actually live: `VLM_Session_Volume_EOD` and `VLM_Session_Volume_CaptureCheck`,
   both confirmed Ready/Enabled after this session's changes; Morning is
   intentionally off, not broken.
+
+---
+
+## Session 2026-09-09 (cont.) -- CaptureCheck diagnosed (upstream, not fixed here); refresh_seed.py repointed
+
+### Part 1 -- `VLM_Session_Volume_CaptureCheck` exit 2: diagnosed, NOT a bug in this repo
+
+**Verdict: exit 2 is correct and has fired every trading day since 2026-07-02.**
+Not a one-off, not an unhandled exception (those exit 3 per the script's own
+`except Exception` handler).
+
+- `schtasks /Query /TN VLM_Session_Volume_CaptureCheck /FO LIST /V`: Last Result
+  `2`, Enabled/Ready, action = `check_capture.py --eod --commodity CT`, working
+  dir = this repo root. `Get-WinEvent` TaskScheduler-Operational confirms the
+  same run: event 201 logs return code `2147942402` (0x80070002, Task
+  Scheduler's HRESULT wrapper for plain exit code 2), launched by a time
+  trigger, completed normally (not crashed).
+- `check_capture.py` exit codes are self-documented and deliberate: `0` = OK
+  or market closed, `2` = INCOMPLETE capture (loud alert), `3` = config/usage
+  error. Exit 2 fires when `<OPTIONS_FLOW_DATA>/<date>/ct_futures_volume.csv`
+  is missing or a due boundary has zero universe contracts.
+- Checked the actual sidecar source (`Options_flow_analyzer/data/<date>/
+  ct_futures_volume.csv`, `config.OPTIONS_FLOW_DATA`): present and populated
+  daily from 2026-06-18 through **2026-07-02**, then **absent on every single
+  trading day since** (checked all 20 most recent date-folders through
+  2026-09-08 -- zero hits; 2026-09-09 has no date-folder at all yet).
+- Root cause: **`Options_flow_analyzer/price_tape.py` no longer exists in that
+  repo** (`ls` confirms; also confirmed via `grep -rl` that no live file in
+  that repo still writes `_write_sidecar`/`_flush_boundary`/
+  `ct_futures_volume.csv` -- only historical `ct_price_tape_status.txt`
+  artifacts from the same June/July window remain). That repo's own
+  `ICE_TIMESALES_ENGINE_BUILD_PLAN.md` and this repo's 2026-09-02 MEMORY entry
+  confirm the producer was migrated to `ice_timesales_engine` (Supabase-backed)
+  around the same time -- `price_tape.py`'s CSV-sidecar mechanism was retired,
+  not repaired in place.
+- Confirmed this is exactly the silent-failure `check_capture.py` exists to
+  catch: ran `futures_session_volume.py --window eod --commodity CT` by hand
+  for 2026-09-09 -- it exited 0 and printed `WARNING: no RTD sidecar and no
+  Bloomberg seed data for 2026-09-09 -- nothing to report` / `No data for this
+  session.` The EOD engine's own "Last Result: 0" in `schtasks` is therefore
+  NOT proof of a healthy pipeline -- it is silently producing empty reports,
+  and CaptureCheck's exit 2 is the only signal saying so.
+
+**No code changed for Part 1.** This is a genuine upstream capture gap, not a
+bug in `check_capture.py`, and repointing its source (CSV sidecar path/schema
+-> whatever `ice_timesales_engine` now produces) is a cross-repo architecture
+decision -- squarely the CLAUDE.md blast-radius stop rule, not a same-repo
+smallest-safe-fix. Reported to Lou below rather than guessed.
+
+### Part 2 -- `refresh_seed.py` repointed; task left Disabled
+
+- Confirmed by full read: Step 1 runs `cotton_futures_volume_history_blpapi.py
+  --start <start> --end <end> --output <seed_csv> --merge` (trailing N calendar
+  days, default 15) to upsert Bloomberg's `PX_VOLUME`/OHLC/OI into
+  `cotton_futures_volume_history.csv`. Step 2 re-runs `futures_session_volume.py
+  --commodity CT --window eod --date <yesterday>` so yesterday's history row
+  moves from RTD-sidecar/intraday estimate to Bloomberg-final. `--window eod`
+  is a valid choice (`choices=['overnight','eod']` in
+  `futures_session_volume.py`) -- only the docstring's "final" wording is
+  stale, not the code.
+- Consumers of the seed CSV, verified by grep: `futures_session_volume.py`
+  (`config.FUT_SEED_CSV`, RVOL seed) and `ice_timesales_engine/api/price.py`
+  (Bloomberg-first settle authority, reads this repo's own copy via
+  `ice_timesales_engine/config.py`'s `VLM_SESSION_VOLUME_REPO` path -- same
+  file, not a duplicate). Gateway route `/v1/ct/generics/history` was not
+  found as a literal string anywhere in this repo (grep for
+  `generics/history` empty) -- it's served by the separate gateway codebase
+  off the committed CSV (see 2026-09-09 seed-CSV-tracking entry above), not by
+  code in this repo.
+- **Fix:** `_REPO` was `Path(r'...\Desktop\vlm_session_volume')` (dead,
+  lowercase/underscore, does not exist). Changed to `_REPO = _HERE` (the
+  existing `__file__`-relative constant already used for `PULLER`/`SEED_CSV`),
+  so `ENGINE` and `LOG_DIR` now resolve inside this repo. One-line diff.
+- Bloomberg terminal must be logged in for Step 1 (`cotton_futures_volume_
+  history_blpapi.py` does `import blpapi` and opens a live `blpapi.Session`) --
+  it will fail without an active terminal session, independent of this fix.
+- Proof: `python refresh_seed.py --dry-run` now prints both step commands with
+  paths inside `VLM_Session_Volume_Project` and does not error. `python -c
+  "import refresh_seed"` succeeds; `refresh_seed.ENGINE.exists()` is `True`.
+  Did NOT run Step 1 for real (no Bloomberg pull) and did NOT enable
+  `VLM_CT_FutVol_SeedRefresh` (confirmed still `Disabled`, Last Run Time is
+  the never-run sentinel) -- both explicitly reserved for Lou.
+- Full `pytest tests/` still 110 passed, 0 failed after the change.
+
+### Recommendation for Lou (not acted on)
+
+Leave `VLM_CT_FutVol_SeedRefresh` disabled for now. The seed CSV's daily
+forward path was never Bloomberg in this design (`BUILD_futures_session_
+volume.md`: "Bloomberg = ONE-TIME reseed... NOT a daily job"; ICE RTD sidecar
+was meant to be the daily forward source) -- and that RTD sidecar is the same
+thing Part 1 found broken since 2026-07-02. Enabling the 09:00 task today
+would run Step 1 fine (assuming Bloomberg is logged in) but Step 2 would keep
+re-confirming empty/estimate rows, because the sidecar it's finalizing FROM
+doesn't exist. Fixing the sidecar producer (Part 1) is the actual prerequisite
+-- enabling this task first just adds a second daily Bloomberg pull without
+solving the forward-data gap. Once the sidecar (or its `ice_timesales_engine`
+successor) is repointed and confirmed live, re-evaluate: enabling gives a
+same-day Bloomberg-final overwrite of yesterday's estimate (keeps the seed CSV
+and the gateway's `/v1/ct/generics/history` current to yesterday's settled
+volume instead of an RTD-derived estimate); leaving it disabled means the seed
+stays at its last manual reseed and the gateway route serves whatever vintage
+that is, with no automatic drift alarm of its own.

@@ -27,7 +27,7 @@ _HERE        = Path(__file__).parent.resolve()
 PULLER       = _HERE / 'cotton_futures_volume_history_blpapi.py'
 SEED_CSV     = _HERE / 'cotton_futures_volume_history.csv'
 
-_REPO        = Path(r'C:\Users\Louis\OneDrive - VLM Commodities LTD\Desktop\vlm_session_volume')
+_REPO        = _HERE
 ENGINE       = _REPO / 'futures_session_volume.py'
 
 PYTHON       = sys.executable   # same interpreter that runs this script
