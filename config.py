@@ -78,6 +78,20 @@ CT_CLOSED_DATES = frozenset([
     '2026-09-07',   # Labor Day
     '2026-11-26',   # Thanksgiving Day
     '2026-12-25',   # Christmas Day
+    # ---- 2027 ---- source: ICE Futures U.S. Exchange Notice, 2027 Trading Holiday Calendar,
+    # dated 2026-06-04, SOFTS column (Cocoa/Coffee/Cotton/FCOJ/Sugar), NOT Canola. Added
+    # 2026-09-20: this set stopped at 2026, so from January every 2027 holiday would have
+    # read as a trading day. Mon 2028-01-03 is OPEN for softs and is deliberately absent.
+    '2027-01-01',   # New Year's Day
+    '2027-01-18',   # Martin Luther King Jr. Day
+    '2027-02-15',   # Presidents' Day
+    '2027-03-26',   # Good Friday
+    '2027-05-31',   # Memorial Day
+    '2027-06-18',   # Juneteenth National Independence Day
+    '2027-07-05',   # Independence Day (observed)
+    '2027-09-06',   # Labor Day
+    '2027-11-25',   # Thanksgiving Day
+    '2027-12-24',   # Christmas Day (observed)
 ])
 
 # ---------------------------------------------------------------------------

@@ -780,3 +780,13 @@ folder quiet mid-loop. 15 min clears the observed inter-commodity gap.
 **Rejected — waiting/polling inside daily_ingest until quiet:** it would hold
 the scheduled run open for an unbounded time; reporting `capture_pending` and
 letting the catch-up pass handle it keeps every run bounded.
+
+## 2026-09-20 — config.CT_CLOSED_DATES extended to 2027
+
+The closed-date set stopped at 2026-12-25, so from January every 2027 ICE holiday would have read as
+a trading day (the ingest and catch-up gate on it). Added the ten 2027 softs closures from the ICE
+2027 Trading Holiday Calendar notice (dated 2026-06-04), SOFTS column — including Mon 2027-01-18
+(MLK). Mon 2028-01-03 is OPEN for softs and deliberately absent (it is Canola that closes). The
+capture repo's own copy had transcribed the Canola column; see its MEMORY for the same date.
+Still open: this is a second hand-kept calendar. The sandbox `ice_calendar` + `data/ice_holidays.json`
+is the hot-reloading authority; importing or asserting against it would end the drift.
