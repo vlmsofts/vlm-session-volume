@@ -3,8 +3,22 @@ daily_ingest.py -- orchestrator: one commodity-day through the full pipeline.
 
 Order (build plan section 6):
   1 holiday check -> clean exit 0, no work
-  2 discover blotters; none -> log zero, exit 0 (NOT a failure -- zero-volume
-    months / no-trade days are by design)
+  2 discover blotters; none -> either
+      (a) the capture has not landed yet  -> status 'capture_pending', exit 3
+          (loud, so Task Scheduler's Last Result shows it and the 21:00
+          catch-up pass has something to find), or
+      (b) a genuine zero-volume day       -> status 'no_blotter', exit 0
+    The discriminator is discover.capture_landed(): the day folder must exist,
+    hold at least one file, AND have gone QUIET (newest mtime at least 15 min
+    old). Only then is a zero blotter count read as a real no-trade day. The
+    quiescence test matters because the capture writes progressively -- a
+    folder holding just a settle file while the blotters are still streaming
+    would otherwise read as "landed" and record a permanent zero. See that
+    function's comment for the residual window. Before 2026-09-20 both branches
+    logged the same
+    "zero volume day (by design)" line and exited 0 -- which is how CC and SB
+    silently lost 2026-09-18 when the 17:10 ingest beat the 17:00 softs
+    capture loop (KC->SB->CC) to the disk. See MEMORY.md 2026-09-20.
   3 per file: sha256 skip -> parse -> normalize -> classify -> upsert -> log
   4 rebuild minute_agg
   5 block supplement + reconcile flags
@@ -47,9 +61,18 @@ def ingest_day(db, commodity: str, session_date: str) -> dict:
 
     files = discover.find_blotter_files(cmd, session_date)
     if not files:
-        summary['status'] = 'no_blotter'
-        print(f'[{cmd} {session_date}] no blotter files -- zero volume day '
-              f'(by design), nothing to ingest.')
+        if discover.capture_landed(cmd, session_date):
+            summary['status'] = 'no_blotter'
+            print(f'[{cmd} {session_date}] no blotter files -- zero volume day '
+                  f'(by design), nothing to ingest.')
+        else:
+            summary['status'] = 'capture_pending'
+            print(f'[{cmd} {session_date}] capture not landed yet -- '
+                  f'{config.blotter_dir(cmd, session_date)} is missing, empty, '
+                  f'or still being written to (newest file younger than '
+                  f'{discover.CAPTURE_QUIESCE_SECONDS // 60} min); NOT recording '
+                  f'a zero-volume day. Re-run when the capture has finished '
+                  f'(jobs.catchup_ingest will pick this up).')
         return summary
 
     for path in files:
@@ -112,7 +135,11 @@ def main() -> int:
     finally:
         db.close()
     print(f'[{cmd} {session_date}] done: {summary}')
-    return 0
+    # Distinct, non-zero per-commodity status so the batch wrapper logs [FAIL]
+    # for this commodity and Task Scheduler's Last Result stops reading green
+    # on a day the capture simply had not landed. 3, not 1, so it is
+    # distinguishable from a genuine ingest error in the log.
+    return 3 if summary['status'] == 'capture_pending' else 0
 
 
 if __name__ == '__main__':

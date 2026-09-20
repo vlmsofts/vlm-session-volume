@@ -520,3 +520,263 @@ that is, with no automatic drift alarm of its own.
 
 **Decided (Lou): retire.** `VLM_Session_Volume_CaptureCheck` exit 2 was correct every day since 2026-07-02: the RTD sidecar (`Options_flow_analyzer/price_tape.py`) it monitored was retired when the ice_timesales_engine took over, so `futures_session_volume.py` produced nothing while its EOD task exited 0. The engine already computes night/day/full windows from the tick feed and the gateway serves them. Deleted tasks `VLM_Session_Volume_EOD` and `VLM_Session_Volume_CaptureCheck`; scripts kept with a RETIRED header. Rejected: re-sourcing the old tool from the engine's bars (rebuilds what the engine does).
 **refresh_seed.py** now resolves `_REPO` relative to its own file = this project folder (confirmed by --dry-run: seed CSV and engine paths both under VLM_Session_Volume_Project). Task `VLM_CT_FutVol_SeedRefresh` stays Disabled; step 2 (engine finalize) is moot now. If Lou wants the Bloomberg generic series (`/v1/ct/generics/history`) current daily, strip step 2 and enable at 09:00 weekdays with the terminal logged in.
+
+---
+
+## Session 2026-09-20 — CC/SB 2026-09-18 re-ingested; the capture/ingest race fixed at the ingest; CT seed reseeded
+
+### 1. CC/SB 2026-09-18 backfilled (Supabase write, authorised)
+
+**What.** Ran `python -m jobs.daily_ingest --commodity SB --date 2026-09-18`
+then the same for CC, from `ice_timesales_engine`. SB: 11 files, 40,869 rows.
+CC: 9 files, 41,054 rows. Both rolled up to `minute_agg`, `bar5m`, reconcile
+flags and the sidecar history CSVs.
+
+**Why.** The 17:10 ET ingest beat the 17:00 softs capture loop (KC -> SB -> CC)
+to the disk on 09-18: CC's capture finished 17:29, SB needed a manual rerun
+that landed 20:13. Both logged `no blotter files -- zero volume day (by
+design)` and exited 0, so nothing ever went back for them. The blotter files
+were on disk intact the whole time — this was a pure re-ingest, no re-capture.
+
+**Verified by EFFECT, not exit code.** Before: ticks 09-18 held CT 37,716 and
+KC 17,279 only. After: CC 41,054, CT 37,716, KC 17,279, SB 40,869 — CT and KC
+byte-identical, in ticks, `minute_agg` (CT 5,408 / KC 3,445) and `bar5m`
+(CT 2,141 / KC 1,420), and their sidecar rows kept their original 09-18
+timestamps. Gateway confirms live: `/v1/sessionvolume/{CC,SB}/bar5m?session_
+date=2026-09-18&source=ice` both return rows, and `/v1/sessionvolume/sessions`
+now lists a 2026-09-18 ice session for both.
+
+### 2. The race fixed at the ingest, not by moving a clock
+
+**What.** Three changes in `ice_timesales_engine`:
+
+- `ingest/discover.py` — new `capture_landed(commodity, session_date)`. The
+  day FOLDER is the discriminator: the capture creates it and writes settle /
+  spreads / settled_surface into it, so a folder present with artifacts means
+  the capture ran (a zero blotter count is then a real no-trade day), while a
+  missing or empty folder means it has not landed.
+- `jobs/daily_ingest.py` — the "no blotter files" branch now splits. Capture
+  landed -> `no_blotter`, exit 0, unchanged by-design behaviour. Capture NOT
+  landed -> status `capture_pending`, a distinct log line `capture not landed
+  yet`, and `main()` returns **3** so the batch wrapper logs `[FAIL]` for that
+  commodity and Task Scheduler's Last Result stops reading green. 3 rather
+  than 1 so it is distinguishable from a genuine ingest error.
+- `jobs/catchup_ingest.py` (new) — second pass. `select_catchup_days()` is a
+  pure function (filesystem listing + set of DB keys in, work list out) so the
+  selection rule is testable without a DB, a disk or a network. It ingests any
+  (commodity, date) in the last N trading days whose blotter folder HAS files
+  but which has no `bar5m` rows. `--days`, `--commodity`, `--dry-run`.
+
+**Why `bar5m` and not `ticks` as the "already done" key.** `bar5m` is what the
+gateway serves and it is rebuilt delete-and-reinsert per day, so its presence
+means the whole pipeline ran, not merely that some ticks landed.
+
+**Anti-spin guarantee.** A day with zero blotter files is never selected,
+whatever the DB says. That is what stops the job re-running forever on a
+genuine zero-volume or holiday-adjacent day such as 2026-07-03, whose folders
+really do hold settle/settled_surface files, really do have zero futures
+blotters, and really do have no DB rows — permanently and correctly.
+
+**Test.** `tests/test_catchup_selection.py`, 14 tests, hermetic. The fixture is
+deliberately the unfavourable one: it contains the holiday-adjacent genuine
+zero-volume day alongside the 09-18 incident, so a rule keyed on "DB has no
+rows" alone would pick the holiday every run. Sabotage-verified twice — with
+the file-count guard replaced by `if False:` two tests go red, and a dedicated
+test feeds the same function the same fixture with only the blotter counts
+falsified and asserts the holiday IS then selected, proving the other
+assertions exercise the guard rather than agreeing with the fixture.
+
+`tests/test_idempotency.py::test_no_blotter_day_is_zero_not_failure` was
+renamed and its expectation changed — it used a MISSING day folder as its
+stand-in for a zero-volume day, which is exactly the conflation being fixed.
+It now pins `capture_pending`, and a new sibling test pins the unchanged
+`no_blotter` branch with a landed capture. Full suite: **209 passed, 17
+skipped**.
+
+### 3. Five MORE gaps of the same class found (NOT fixed — needs authorisation)
+
+`python -m jobs.catchup_ingest --days 40 --dry-run` found, beyond 09-18:
+**CC 2026-08-18, CC 2026-08-27, SB 2026-08-18, SB 2026-08-26, SB 2026-08-27** —
+blotter files on disk, zero `bar5m` rows. Verified directly against the DB.
+So 09-18 was not a one-off; this race has been eating CC/SB sessions for a
+month. Write authorisation for this session covered the 09-18 re-ingest only,
+so these were left alone. `python -m jobs.catchup_ingest --days 40` fixes all
+five in one pass once Lou approves.
+
+### 4. CT Bloomberg seed reseeded (task 2)
+
+**What.** `python refresh_seed.py --days 25` (25 not the default 15, because
+the gap was 09-02 -> 09-20, 18 days — the default window would not have
+reached it). Bloomberg reachable (localhost:8194 open). 144 rows merged,
+44,144 kept, 44,193 -> 44,289 lines. New max date **2026-09-18** (was
+2026-09-02); 12 new session dates added. All 8 generics on the max date carry
+non-blank settle and volume.
+
+**Nothing truncated:** zero (date, generic) keys lost against a pre-run backup;
+min date still 2005-01-03.
+
+**CORRECTION (audit, same session). 2026-09-02 was not "blanks filled in" —
+it was a PARTIAL INTRADAY SESSION REVISED TO FINAL, and the first write-up of
+this understated it.** All 8 generics had volume AND px_last revised
+populated -> different on that date:
+
+| generic | volume before -> after | px_last before -> after |
+|---|---|---|
+| CTDEC1 | 28,114 -> **59,274** | 88.89 -> 88.93 |
+| CTDEC2 | 1,045 -> 3,662 | 79.35 -> 80.20 |
+| CTJUL1 | 1,401 -> 4,277 | 91.75 -> 92.23 |
+| CTMAR1 | 10,515 -> **26,087** | 91.03 -> 91.30 |
+| CTMAR2 | 31 -> 83 | (blank) -> 80.62 |
+| CTMAY1 | 3,135 -> **10,045** | 92.29 -> 92.77 |
+| CTMAY2 | 0 -> 5 | (blank) -> 80.70 |
+| CTJUL2 | 0 -> (blank) | (blank) -> 80.24 |
+
+CTDEC1's volume more than doubled. **Why:** 2026-09-02 was the LAST row in the
+file, i.e. the session the seed captured ON THE DAY it was last run — so it
+held a mid-session snapshot, not the settled total. Bloomberg has now returned
+the final figures for it. Confirmed as exactly that and nothing wider: the
+other two dates in the overlap window, 08-31 and 09-01, have **identical
+volume and px_last before and after** (e.g. 08-31 CTDEC1 33,727/93.14
+unchanged; 09-01 CTDEC1 35,433/91.55 unchanged) — only their `open_int` was
+filled where previously blank. A settled session re-pulls identically; only
+the intraday one moved.
+
+**Consequence worth keeping in mind:** any analysis run off this file between
+09-02 and today was using a partial 09-02 (CTDEC1 short by 31,160 lots — the
+old figure was only 47.4% of the true total, i.e. understated by 52.6%).
+The file is now correct for that date. This is the generic hazard of a
+manual-reseed file whose last row may be an intraday snapshot — the tail row
+is provisional until the next reseed re-pulls it.
+
+`open_int` was also filled in across the overlap where it had been blank.
+`efp_volume`/`efs_volume` going blank on those rows is not a regression:
+42,009 of 44,288 rows in the file already have them blank.
+
+**Noted, pre-existing, not a defect:** 2026-09-07 (Labor Day) came back from
+Bloomberg as OI-only rows with blank volume and settle. The file has carried
+568 such rows across every historical ICE holiday since 2024 — this is how
+Bloomberg has always returned a closed session here, not something this reseed
+introduced.
+
+CSV left **modified and uncommitted**, as instructed. Step 2 of `refresh_seed`
+ran the RETIRED `futures_session_volume.py` and printed `no RTD sidecar ...
+nothing to report` — the expected no-op recorded in the 2026-09-09 entry, not
+a failure.
+
+### Decisions
+
+- **Decided:** fix the race in the INGEST (make it refuse to record a final
+  zero it cannot justify) plus a catch-up pass, rather than move or add a
+  capture-time clock.
+  **Rejected — moving the 17:10 trigger later:** the next slow capture moves
+  past the new time too. 09-18's own SB rerun landed at 20:13; no fixed clock
+  survives that.
+  **Rejected — a capture-completion marker file:** it would require changing
+  the capture repo (`C:\Ice eod records`), a cross-repo write and a blast-radius
+  stop. The day folder is already a marker the capture writes as a side effect.
+  **Rejected — keying the catch-up on "DB has no rows" alone:** it spins
+  forever on genuine zero-volume days. Hence the blotter-file-count guard.
+- **Decided:** `capture_pending` exits 3, deliberately loud. The whole failure
+  mode was a silent green.
+- **Not done, on purpose:** nothing committed or pushed; no scheduled task
+  created, modified or enabled; the five August gaps left for Lou.
+
+### Next session
+
+1. Approve `python -m jobs.catchup_ingest --days 40` for the five August gaps.
+2. Decide on the drafted 21:00 ET catch-up trigger (block in the session
+   report; NOT registered).
+3. Decide whether to re-enable `VLM_CT_FutVol_SeedRefresh` (still Disabled;
+   Mon-Fri 09:00 ET, runs `refresh_seed.py` with NO args = a 15-day window,
+   and its step 2 is the retired engine).
+
+### 5. Follow-ups same session — catch-up wrapper .bat + refresh_seed --seed-only
+
+**`ice_timesales_engine/Run_Catchup_Ingest.bat` (new).** Sibling of
+`run_daily_ingest_all.bat`, mirroring it exactly: same `DATABASE_URL` guard
+(refuses to run rather than silently fall back to local SQLite), same
+`py -3.14` pin, same `cd /d "%~dp0"`, same `logs\<name>.log` tee via the
+`:log` helper. Runs `py -3.14 -m jobs.catchup_ingest --days 5` and exits with
+the script's own code.
+
+**Deliberately NOT mirrored: the trading-calendar gate.**
+`run_daily_ingest_all.bat` needs `is_trading_day.py` because it omits `--date`
+and would re-process Friday on a Saturday. The catch-up takes an explicit
+window and `select_catchup_days()` already excludes closed dates and
+zero-blotter days, so a weekend run is a clean no-op — and gating it out would
+suppress exactly the Friday-evening catch-up this exists to perform.
+
+Verified by running it, not by reading it: clean run exits 0 and logs
+`[ OK ] catchup_ingest` with the window line teed into
+`logs/run_catchup_ingest.log`; a scratch copy forced to exit 7 propagates
+**7** and logs `[FAIL] catchup_ingest returned 7`; blanking `DATABASE_URL` for
+a child cmd exits **1** with the guard message. (The `endlocal & exit /b %RC%`
+late-expansion concern was tested rather than assumed — it propagates
+correctly.)
+
+**`refresh_seed.py --seed-only` (new flag).** Runs Step 1 and skips the
+retired Step 2 entirely, printing one explicit SKIPPED line instead of the
+`no RTD sidecar ... nothing to report` WARNING. Lets
+`VLM_CT_FutVol_SeedRefresh` be re-enabled clean. **Default behaviour is
+unchanged** — no flag still runs both steps.
+
+`tests/test_refresh_seed_seed_only.py` (new, 8 tests, hermetic — `subprocess.run`
+stubbed so no Bloomberg call and no file touched): asserts `--seed-only` runs
+exactly one command and it is Step 1; that it still carries `--merge` (losing
+it would overwrite rather than upsert a 44k-row file — silent truncation of 20
+years); that a failed Step 1 still returns non-zero rather than a clean 0 just
+because Step 2 was skipped; and that the default path still runs BOTH steps.
+Sabotage-verified: replacing `if args.seed_only:` with `if False:` turns the
+skip test red. Root suite now **118 passed** (was 110), engine **209 passed**.
+
+**Rejected — deleting Step 2 outright:** it is still the documented path for
+whenever the forward pipeline is re-sourced, and removing it changes default
+behaviour for an interactive run. A flag leaves the default alone.
+**Rejected — having the .bat pass `--days 5` via a task argument:** the
+existing Daily Ingest task passes no arguments and keeps its parameters in the
+.bat; matching that keeps one place to look.
+
+**SeedRefresh task should carry:** Execute `...python.exe`, Arguments
+`"...\refresh_seed.py" --days 25 --seed-only`. 25 not 15 because the default
+window is too narrow to recover a gap like 09-02 -> 09-18. Still NOT enabled.
+
+### 6. Audit fixes (same session)
+
+**`capture_landed()` tightened — it was too weak to do its job.** As first
+written it was `isdir and any(listdir)`, so a folder holding one settle file
+while the blotters were still streaming read as LANDED, and `daily_ingest`
+would have recorded a permanent `no_blotter` and exited 0 — reintroducing the
+exact silent-zero the discriminator exists to prevent, through a narrower
+window. Now requires all three: folder exists, >=1 file, and the **newest**
+file's mtime is at least `CAPTURE_QUIESCE_SECONDS` (15 min) old. `now` is
+injectable so the rule is testable without sleeping.
+
+Newest, not oldest, deliberately: an old settle file beside a blotter written
+seconds ago is an active capture, and keying on the oldest would call it
+landed.
+
+**Residual window, recorded not hidden:** a capture that stalls >15 min
+mid-run and then resumes still reads as landed during the stall. That gap is
+bounded and self-healing — `catchup_ingest` re-checks the last N trading days
+for blotters-on-disk-but-not-in-DB, so such a day is picked up next pass
+rather than lost. Closing it completely needs a completion marker written by
+the capture itself, which lives in `C:\Ice eod records` — a cross-repo change,
+deliberately not made.
+
+Tests extended (engine **213 passed**, was 209): newest file 2 min old ->
+`capture_pending`; 20 min old with zero blotters -> `no_blotter`; newest-
+governs-not-oldest; both sides of the exact threshold. Sabotage-verified —
+replacing the quiescence return with `True` turns **4** tests red, and the
+sabotage run prints `no blotter files -- zero volume day (by design)` against
+a mid-capture folder, which is the regression itself. Root suite 118 passed.
+
+Verified against real disk after the change: all four 09-18 folders (long
+quiet) read landed with their blotter counts intact, and 2026-07-03 reads
+landed-with-zero-blotters, i.e. a correct final zero day.
+
+**Rejected — a shorter quiesce window (e.g. 5 min):** the 09-18 softs loop had
+~12 min between KC finishing and CC finishing; 5 min would have called the
+folder quiet mid-loop. 15 min clears the observed inter-commodity gap.
+**Rejected — waiting/polling inside daily_ingest until quiet:** it would hold
+the scheduled run open for an unbounded time; reporting `capture_pending` and
+letting the catch-up pass handle it keeps every run bounded.

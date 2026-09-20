@@ -51,7 +51,53 @@ class TestMissingForward:
         assert summary['status'] == 'holiday'
         assert tmp_db.q('SELECT COUNT(*) FROM ticks')[0][0] == 0
 
-    def test_no_blotter_day_is_zero_not_failure(self, tmp_db, fixture_ice_root):
+    def test_no_day_folder_is_capture_pending_not_a_zero_day(
+            self, tmp_db, fixture_ice_root):
+        """CHANGED 2026-09-20. This case used to assert 'no_blotter'. A MISSING
+        day folder is not evidence of a zero-volume day -- it is evidence the
+        capture has not written anything yet, which is exactly how CC and SB
+        lost 2026-09-18. 'no_blotter' now requires a landed capture; see the
+        next test."""
         from jobs.daily_ingest import ingest_day
         summary = ingest_day(tmp_db, 'CT', '2026-06-15')   # weekday, no folder
+        assert summary['status'] == 'capture_pending'
+        assert tmp_db.q('SELECT COUNT(*) FROM ticks')[0][0] == 0
+
+    def test_landed_capture_with_no_blotters_is_a_zero_volume_day(
+            self, tmp_db, monkeypatch, tmp_path):
+        """The by-design branch, unchanged: the capture ran, has gone QUIET,
+        and no futures traded -> a final zero.
+
+        The artifact is back-dated past discover.CAPTURE_QUIESCE_SECONDS on
+        purpose. A freshly-written folder is a capture still in flight, which
+        is the case the next test pins."""
+        import os
+        import time
+
+        import config
+        from ingest import discover
+        from jobs.daily_ingest import ingest_day
+        monkeypatch.setattr(config, 'ICE_ROOT', str(tmp_path))
+        day = tmp_path / 'CT' / '2026-06-15'
+        day.mkdir(parents=True)
+        f = day / 'futures_settle_2026-06-15.csv'
+        f.write_text('x')
+        old = time.time() - discover.CAPTURE_QUIESCE_SECONDS - 60
+        os.utime(f, (old, old))
+        summary = ingest_day(tmp_db, 'CT', '2026-06-15')
         assert summary['status'] == 'no_blotter'
+        assert tmp_db.q('SELECT COUNT(*) FROM ticks')[0][0] == 0
+
+    def test_folder_still_being_written_to_is_capture_pending(
+            self, tmp_db, monkeypatch, tmp_path):
+        """A day folder whose newest file was written seconds ago is an ACTIVE
+        capture, not a zero-volume day -- the 2026-09-18 17:10 shape."""
+        import config
+        from jobs.daily_ingest import ingest_day
+        monkeypatch.setattr(config, 'ICE_ROOT', str(tmp_path))
+        day = tmp_path / 'CT' / '2026-06-15'
+        day.mkdir(parents=True)
+        (day / 'futures_settle_2026-06-15.csv').write_text('x')   # mtime = now
+        summary = ingest_day(tmp_db, 'CT', '2026-06-15')
+        assert summary['status'] == 'capture_pending'
+        assert tmp_db.q('SELECT COUNT(*) FROM ticks')[0][0] == 0

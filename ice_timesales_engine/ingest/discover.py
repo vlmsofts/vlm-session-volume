@@ -9,6 +9,7 @@ zero-volume months by design) -- a missing file is ZERO volume, not a gap.
 
 import os
 import re
+import time
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -69,3 +70,64 @@ def settle_path(commodity: str, session_date: str) -> Optional[Path]:
 def spreads_path(commodity: str, session_date: str) -> Optional[Path]:
     p = Path(config.blotter_dir(commodity, session_date)) / f'spreads_{session_date}.csv'
     return p if p.is_file() else None
+
+
+# -- capture-landed discriminator -------------------------------------------
+# Added 2026-09-20, tightened the same day after audit.
+#
+# "No futures blotters" has two causes that were previously indistinguishable
+# (see jobs/daily_ingest.py's module docstring): a real no-trade day, and a
+# capture that has not finished writing yet.
+#
+# WHAT IS CHECKED, exactly, all three required:
+#   1. the day folder exists;
+#   2. it contains at least one file;
+#   3. the NEWEST file in it was last modified at least CAPTURE_QUIESCE_SECONDS
+#      ago (default 15 min) -- i.e. the capture has gone quiet.
+#
+# Condition 3 is the point. The capture writes settle / spreads /
+# settled_surface / blotter files progressively, so a folder holding a single
+# settle file while the blotters are still streaming satisfies 1 and 2 while
+# the capture is very much still running. Without the quiescence test
+# daily_ingest would read that as "landed", record a permanent no_blotter and
+# exit 0 -- reintroducing the exact silent-zero this discriminator exists to
+# prevent, just through a narrower window.
+#
+# RESIDUAL WINDOW, stated honestly: this is a heuristic, not a handshake. A
+# capture that stalls for more than CAPTURE_QUIESCE_SECONDS mid-run and then
+# resumes still reads as landed during the stall. The gap that leaves is
+# bounded and self-healing -- jobs/catchup_ingest.py re-checks the last N
+# trading days for blotters-on-disk-but-not-in-DB, so a day mis-classified
+# this way is picked up on the next catch-up pass rather than lost. The only
+# way to close it completely is a completion marker written by the capture
+# itself, which lives in another repo (C:\Ice eod records) and is a
+# cross-repo change, not a same-repo fix.
+
+CAPTURE_QUIESCE_SECONDS = 15 * 60
+
+
+def capture_landed(commodity: str, session_date: str,
+                   now: Optional[float] = None,
+                   quiesce_seconds: int = CAPTURE_QUIESCE_SECONDS) -> bool:
+    """True when the capture demonstrably ran AND has gone quiet.
+
+    `now` (epoch seconds) is injectable so the quiescence rule can be tested
+    without sleeping; it defaults to the wall clock.
+    """
+    day_dir = config.blotter_dir(commodity.upper(), session_date)
+    if not os.path.isdir(day_dir):
+        return False
+    mtimes = []
+    for name in os.listdir(day_dir):
+        full = os.path.join(day_dir, name)
+        try:
+            if os.path.isfile(full):
+                mtimes.append(os.path.getmtime(full))
+        except OSError:
+            # A file vanishing mid-listing is itself evidence of an active
+            # capture; ignore it and let the remaining mtimes decide.
+            continue
+    if not mtimes:
+        return False
+    clock = time.time() if now is None else now
+    return (clock - max(mtimes)) >= quiesce_seconds

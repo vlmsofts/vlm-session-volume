@@ -118,3 +118,31 @@ sidecar in one pass, and verifies both.
 **Note for next time.** After ANY resolver change, re-run that job. The
 inventory of which artifacts re-derive versus merely aggregate is in the
 user-level memory note `derived-label-artifacts`.
+
+---
+
+## E-006 · An "additive-only" diff summary hid a 2x revision to a live number (2026-09-20)
+
+**What didn't work.** After `refresh_seed.py --days 25`, the merge was
+reported as "nothing truncated; `open_int` filled in where it had been blank."
+That was drawn from a key-level check (zero (date, generic) keys lost) and a
+glance at one sample row — a true statement that answered the wrong question.
+
+It missed that **2026-09-02 had every one of its 8 generics revised in VALUE**:
+CTDEC1 volume 28,114 -> 59,274 (the old figure was 47.4% of the truth),
+settle 88.89 -> 88.93, and similar on the other seven. The cause is benign and
+worth knowing — 09-02 was the file's last row, captured intraday on the day
+the seed was last run, so it held a mid-session snapshot that Bloomberg has
+now settled — but "blanks filled in" recorded it as cosmetic when it was a
+material correction to a number downstream analysis had been using for 18 days.
+
+**What worked.** Diffing the OLD and NEW values field-by-field per key, not
+just comparing key sets, and then testing the explanation: 08-31 and 09-01 are
+byte-identical in volume and px_last before/after, so only the intraday tail
+row moved. That contrast is what turns "something changed" into a mechanism.
+
+**Note for next time.** A merge report must state what CHANGED IN VALUE, not
+only what was added or lost. For any upsert into a file with history, compare
+the overlap field-by-field and report the largest delta — and treat the LAST
+row of a manually-reseeded file as provisional by default, because it is the
+one most likely to be an intraday snapshot rather than a settled figure.
