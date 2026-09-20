@@ -790,3 +790,10 @@ a trading day (the ingest and catch-up gate on it). Added the ten 2027 softs clo
 capture repo's own copy had transcribed the Canola column; see its MEMORY for the same date.
 Still open: this is a second hand-kept calendar. The sandbox `ice_calendar` + `data/ice_holidays.json`
 is the hot-reloading authority; importing or asserting against it would end the drift.
+
+## 2026-09-20 - Daily Ingest moved from 17:10 to 17:45 (Lou approved)
+
+What: Task Scheduler task "VLM ICE Timesales Engine - Daily Ingest" trigger changed 17:10 -> 17:45 (read back: 17:45; the 15:00 ingest and the 21:00 catch-up are unchanged).
+Why: the softs blotter starts 17:00 and runs KC then SB then CC as three processes. Since the get_timesales batch was correctly cut to 10 symbols (2026-09-18) the run takes about 30 minutes, not 7 to 11: on 2026-09-18 SB started 17:09:23 and CC 17:17:27, so the 17:10 ingest fired before sugar and cocoa had been captured. The 21:00 catch-up and the capture_landed() quiescence check covered it, but the 17:10 slot did no useful work for SB/CC.
+Rejected: moving the softs blotter earlier (it shares one ICE session with cotton's settle window; the 2026-08-27 KC Z26 loss is the precedent).
+Note: 17:45 still precedes a worst-case softs run with full re-ask budgets (up to about 18:00); the 21:00 catch-up remains the backstop, and the capture manifests (Phase 1 softs, not yet landed) will let the ingest key on a finished leg instead of a clock.
