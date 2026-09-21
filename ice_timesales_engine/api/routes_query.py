@@ -367,7 +367,7 @@ def catalog():
         # DERIVED from classifier.CANCELLED_TYPES rather than hand-listed, so a
         # future widening of R11 cannot leave cancelled volume unadvertised and
         # therefore unretrievable (requirement 1 of the 2026-08-24 tag ruling).
-        'types': (['outright', 'leg', 'efs', 'efp', 'block', 'other']
+        'types': (['outright', 'leg', 'efs', 'efp', 'block', 'tas', 'other']
                   + list(classifier.CANCELLED_TYPES)),
         'cancelled_types': list(classifier.CANCELLED_TYPES),
     })

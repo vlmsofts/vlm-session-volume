@@ -106,13 +106,18 @@ class TestClassifierIsUnchanged:
 
         Asserted ('efs_delete',) until the tag ruling. That narrow rule let 340
         cancelled lots keep counting because they were blocks, an EFP and a leg
-        rather than EFSs."""
+        rather than EFSs.
+
+        WIDENED AGAIN 2026-09-21: 'tas' joined the ladder as its own primary
+        bucket (TAS is identified by ICE symbol, not by Conditions), so its
+        cancelled twin 'tas_delete' must be excluded by the same rule -- same
+        failure mode as the 2026-08-24 gap if it were ever left out."""
         assert set(EXCLUDED_FROM_CLEAN) == {
-            'efs_delete', 'efp_delete', 'block_delete',
+            'efs_delete', 'efp_delete', 'block_delete', 'tas_delete',
             'leg_delete', 'outright_delete', 'other_delete'}
         for t in EXCLUDED_FROM_CLEAN:
             assert is_excluded(t), f'{t} is cancelled flow and must not count'
-        for t in ('outright', 'leg', 'efs', 'efp', 'block', 'other'):
+        for t in ('outright', 'leg', 'efs', 'efp', 'block', 'tas', 'other'):
             assert not is_excluded(t), f'{t} must still count'
 
 

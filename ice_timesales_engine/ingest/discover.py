@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 import config
+from .normalize import tas_symbol
 
 _DAY_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 
@@ -42,7 +43,12 @@ def find_day_folders(commodity: str,
 
 
 def find_blotter_files(commodity: str, session_date: str) -> list[Path]:
-    """All futures blotter files for one commodity-day, sorted by forward."""
+    """All OUTRIGHT futures blotter files for one commodity-day, sorted by
+    forward. Excludes TAS blotters (see find_tas_blotter_files) -- the two are
+    genuinely separate files on disk (futures_blotter_CT_* vs
+    futures_blotter_CTZ_*), never mixed in one, so the pattern here is
+    anchored with a trailing underscore that a bare `{cmd}` cannot satisfy
+    against a `{cmd}Z` filename."""
     cmd = commodity.upper()
     day_dir = config.blotter_dir(cmd, session_date)
     if not os.path.isdir(day_dir):
@@ -54,8 +60,41 @@ def find_blotter_files(commodity: str, session_date: str) -> list[Path]:
     return sorted(out)
 
 
+def find_tas_blotter_files(commodity: str, session_date: str) -> list[Path]:
+    """All Trade-At-Settlement blotter files for one commodity-day.
+
+    ICE captures TAS on a symbol one letter longer than the outright (CT's
+    TAS trades as 'CTZ', e.g. 'CTZ Z26' -- an ICE naming convention, not a
+    typo), landing in the SAME day-folder as the outright blotters but as its
+    own file: futures_blotter_CTZ_<FWD>_<date>.csv. Verified on disk: this
+    exists for CT back to 2026-07-13 and was never read by any ingest path
+    before 2026-09-21 -- find_blotter_files's pattern requires the literal
+    filename to end in `_{cmd}_`, which a `{cmd}Z_` file never matches, so
+    the file was invisible rather than filtered.
+
+    Added additively; commodities with no confirmed TAS symbol (normalize.
+    tas_symbol returns None) simply return an empty list here, same as a
+    missing day-folder does.
+    """
+    cmd = commodity.upper()
+    sym = tas_symbol(cmd)
+    if not sym:
+        return []
+    day_dir = config.blotter_dir(cmd, session_date)
+    if not os.path.isdir(day_dir):
+        return []
+    pat = re.compile(
+        rf'^futures_blotter_{sym}_([A-Z]\d{{2}})_{re.escape(session_date)}\.csv$'
+    )
+    out = [Path(day_dir) / n for n in os.listdir(day_dir) if pat.match(n)]
+    return sorted(out)
+
+
 def parse_fwd_from_filename(path: Path) -> str:
-    """futures_blotter_CT_Z26_2026-07-02.csv -> 'Z26'."""
+    """futures_blotter_CT_Z26_2026-07-02.csv -> 'Z26'.
+    futures_blotter_CTZ_Z26_2026-07-02.csv  -> 'Z26' (same: the forward-month
+    group is identical for TAS and outright, only the commodity-prefix segment
+    carries the extra 'Z')."""
     m = re.match(r'^futures_blotter_[A-Z]+_([A-Z]\d{2})_', path.name)
     if not m:
         raise ValueError(f'Not a futures blotter filename: {path.name}')

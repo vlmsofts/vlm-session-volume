@@ -23,15 +23,28 @@ TAGS = {'SetByAsk', 'SetByBid', 'Leg', 'EFS', 'EFP', 'BlockTrde', 'Delete'}
 # didn't stamp with an aggressor side (verified 2026-07-02: 454 blank prints,
 # real prices 76.88-77.85). ask/bid are tracked as sub-splits, not separate
 # primary buckets, so the Outright total is complete.
+# 'tas' (Trade At Settlement) is DIFFERENT from the rest of this ladder: it is
+# not resolved from Conditions at all. ICE captures TAS on its own symbol
+# (CT's is 'CTZ'), in its own blotter file, landing alongside the outright's
+# Conditions vocabulary (Leg, SetByAsk/Bid seen; Delete not yet observed but
+# handled the same as every other bucket if it occurs). Per Lou's ruling
+# 2026-09-21, TAS is a volume-only signal -- it prints at settle +/- a
+# differential by definition, so the Conditions/aggressor axis it happens to
+# carry is not meaningful the way it is for an outright fill, and TAS is kept
+# as ONE bucket regardless of Leg/aggressor tag. is_tas is therefore passed in
+# by the caller (from which blotter file the row came from), never derived
+# from tokens, and is checked FIRST in the ladder -- ahead of Delete -- so a
+# cancelled TAS still resolves to 'tas_delete', not 'outright_delete' or
+# similar.
 # CANCELLED buckets mirror the live ladder, one per base type. R11 keys on the
 # Delete TAG (see below), and the tag is orthogonal to trade type, so a cancelled
 # print keeps its type identity instead of being flattened into one bucket. The
 # legacy name 'efs_delete' is DELIBERATELY UNCHANGED -- it is what a cancelled
 # EFS has always been called, it is stored in ticks/minute_agg/bar5m on disk, and
 # renaming it would break every stored row and every explicit types= query.
-PRIMARY_TYPES = ('efs_delete', 'efp_delete', 'block_delete', 'leg_delete',
-                 'outright_delete', 'other_delete',
-                 'efp', 'efs', 'block', 'leg', 'outright', 'other')
+PRIMARY_TYPES = ('tas_delete', 'efs_delete', 'efp_delete', 'block_delete',
+                 'leg_delete', 'outright_delete', 'other_delete',
+                 'tas', 'efp', 'efs', 'block', 'leg', 'outright', 'other')
 # Aggressor sub-split of outright (informational; NOT a separate primary bucket).
 OUTRIGHT_SIDES = ('outright_ask', 'outright_bid', 'outright_unstamped')
 
@@ -73,7 +86,7 @@ OUTRIGHT_SIDES = ('outright_ask', 'outright_bid', 'outright_unstamped')
 # ICE counts them, verified exact against the official Daily Market Report
 # (17/17, 315/315, 100/100). ONLY the Delete tag marks cancelled flow.
 CANCELLED_SUFFIX = '_delete'
-EXCLUDED_FROM_CLEAN = ('efs_delete', 'efp_delete', 'block_delete',
+EXCLUDED_FROM_CLEAN = ('tas_delete', 'efs_delete', 'efp_delete', 'block_delete',
                        'leg_delete', 'outright_delete', 'other_delete')
 
 
@@ -149,19 +162,29 @@ def tag_flags(tokens: frozenset) -> dict:
     }
 
 
-def primary_type(tokens: frozenset) -> str:
+def primary_type(tokens: frozenset, is_tas: bool = False) -> str:
     """Mutually-exclusive bucket via the precedence ladder (first match wins):
       0 Delete -> the cancelled twin of whatever the print otherwise is
-      1 efp  2 efs  3 block  4 leg  5 outright
+      1 TAS  2 efp  3 efs  4 block  5 leg  6 outright
     A blank token set (no aggressor stamp) is an OUTRIGHT fill -> 'outright',
     NOT a separate 'blank' bucket. Only genuinely unknown non-empty conditions
     fall through to 'other' (logged at ingest if ever hit).
+
+    is_tas is a CALLER-SUPPLIED fact (which blotter file the row was read
+    from), never derived from `tokens` -- TAS is identified by ICE's symbol
+    convention (CT's TAS trades as 'CTZ'), not by any Conditions token. It is
+    checked ahead of every Conditions-derived bucket except Delete, so a TAS
+    print carrying 'Leg' still classifies as 'tas', matching Lou's ruling
+    2026-09-21 that TAS is a volume-only signal and its Conditions axis is not
+    meaningful the way it is for an outright fill.
     """
     # R11 keys on the TAG: a Delete-tagged print is cancelled whatever its type,
     # so resolve the live bucket first and then map it to its cancelled twin.
     # 'EFS, Delete' -> 'efs_delete', preserving the historic name.
     if 'Delete' in tokens:
-        return cancelled_type_for(primary_type(tokens - {'Delete'}))
+        return cancelled_type_for(primary_type(tokens - {'Delete'}, is_tas))
+    if is_tas:
+        return 'tas'
     if 'EFP' in tokens:
         return 'efp'
     if 'EFS' in tokens:

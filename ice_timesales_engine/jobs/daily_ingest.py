@@ -43,7 +43,7 @@ from ingest.aggregator import rebuild_minute_agg         # noqa: E402
 from ingest.bar5m import rollup_ice_bar5m                # noqa: E402
 from ingest.blotter_parser import file_sha256, read_blotter  # noqa: E402
 from ingest.loader import IngestMeta, already_ingested, record_ingest, upsert_ticks  # noqa: E402
-from ingest.normalize import normalize_contract, normalize_tick  # noqa: E402
+from ingest.normalize import normalize_contract, normalize_tick, tas_symbol  # noqa: E402
 from store.db import connect                             # noqa: E402
 
 
@@ -60,7 +60,8 @@ def ingest_day(db, commodity: str, session_date: str) -> dict:
         return summary
 
     files = discover.find_blotter_files(cmd, session_date)
-    if not files:
+    tas_files = discover.find_tas_blotter_files(cmd, session_date)
+    if not files and not tas_files:
         if discover.capture_landed(cmd, session_date):
             summary['status'] = 'no_blotter'
             print(f'[{cmd} {session_date}] no blotter files -- zero volume day '
@@ -75,9 +76,17 @@ def ingest_day(db, commodity: str, session_date: str) -> dict:
                   f'(jobs.catchup_ingest will pick this up).')
         return summary
 
-    for path in files:
+    # TAS files use the SAME symbol-independent filename shape as an outright
+    # (futures_blotter_<SYM>_<FWD>_<date>.csv), just under the TAS symbol
+    # ('CTZ' for CT) rather than the outright's ('CT'). Folding both file
+    # lists into one loop means every downstream step -- sha256 skip,
+    # normalize_tick (which derives TAS-ness from the row's own ice_code),
+    # ingest_log bookkeeping keyed on ice_code -- needs no TAS-specific branch.
+    for path in list(files) + list(tas_files):
         fwd = discover.parse_fwd_from_filename(path)
-        ice_code = normalize_contract(f'{cmd} {fwd}')
+        is_tas_file = path in tas_files
+        sym = tas_symbol(cmd) if is_tas_file else cmd
+        ice_code = normalize_contract(f'{sym} {fwd}')
         sha = file_sha256(path)
         if already_ingested(db, cmd, session_date, ice_code, sha):
             summary['skipped_files'] += 1
