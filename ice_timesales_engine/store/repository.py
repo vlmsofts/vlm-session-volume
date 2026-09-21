@@ -9,16 +9,32 @@ from typing import Optional
 
 from ingest.aggressor import BUY, SELL, UNSIDED, side_for_conditions
 from ingest.classifier import clean_split, excluded_sql
+from ingest.normalize import is_tas_ice_code, tas_ice_code_for
 from store.db import Db
 
 
-def _contract_filter(contracts: Optional[list]):
+def _contract_filter(contracts: Optional[list], commodity: str = 'CT'):
     """SQL fragment + params for an optional ice_code/generic filter.
-    Accepts ice codes (CTZ6) and generic codes (CTDEC1) mixed."""
+    Accepts ice codes (CTZ6) and generic codes (CTDEC1) mixed.
+
+    Picking an outright ice_code (from the contracts dropdown, which lists
+    outrights only per Lou's 2026-09-21 ruling on the TAS UX) also matches
+    that contract's TAS twin ('CTZ6' -> also 'CTZZ6'). Whether TAS actually
+    counts toward a returned total is still decided by the types= filter
+    alone, exactly as outright/leg/efs/etc. always have been -- this only
+    makes the contract-scope decision consistent with that: picking a
+    contract-month should not silently exclude a whole trade type ANOTHER
+    filter already turned on."""
     if not contracts:
         return '', []
-    ph = ','.join(['%s'] * len(contracts))
-    return f' AND (ice_code IN ({ph}) OR generic_code IN ({ph}))', contracts + contracts
+    expanded = list(contracts)
+    for c in contracts:
+        tas = tas_ice_code_for(c, commodity)
+        if tas:
+            expanded.append(tas)
+    ph = ','.join(['%s'] * len(expanded))
+    return (f' AND (ice_code IN ({ph}) OR generic_code IN ({ph}))',
+            expanded + expanded)
 
 
 def _types_filter(types: Optional[list]):
@@ -97,7 +113,7 @@ def window_sum(db: Db, commodity: str, start: str, end: str,
     'excluded' / 'excluded_by_type' are the P6.6 accounting half: the discarded
     lots stay counted and attributable, never silently dropped. The invariant
     clean + excluded == all holds for every window, source and filter."""
-    cf, cp = _contract_filter(contracts)
+    cf, cp = _contract_filter(contracts, commodity)
     # _all: this function REPORTS the excluded half, so its scan must see the
     # cancelled buckets. clean_split() below does the excluding, not the SQL.
     tf, tp = _types_filter_all(types)
@@ -196,7 +212,7 @@ def profile(db: Db, commodity: str, start: str, end: str, bucket_minutes,
     row labeled at `start` -- one bar per session, correct even for windows
     that cross midnight (night sessions), unlike a large numeric bucket which
     would still floor-fold on clock-time-of-day and split at 00:00."""
-    cf, cp = _contract_filter(contracts)
+    cf, cp = _contract_filter(contracts, commodity)
     tf, tp = _types_filter(types)
     full = (bucket_minutes == 'full')
 
@@ -243,7 +259,7 @@ def side_profile(db: Db, commodity: str, start: str, end: str,
     That is an honest absence, not a bug; the caller must show it, never hide
     or backfill it.
     """
-    cf, cp = _contract_filter(contracts)
+    cf, cp = _contract_filter(contracts, commodity)
     where = " AND primary_type='outright'" + cf
 
     if source == 'bloomberg':
@@ -431,7 +447,17 @@ def traded_contracts(db: Db, commodity: str, session_date: str,
     'total' is CLEAN per R11: cancelled flow never counts (the exclusion comes
     from classifier.EXCLUDED_FROM_CLEAN via excluded_sql, not a local predicate).
     This list drives contract pickers and per-contract tables, both of which are
-    client-facing, so the default must not carry busted lots."""
+    client-facing, so the default must not carry busted lots.
+
+    TAS ice_codes are EXCLUDED from this list (Lou's 2026-09-21 ruling on the
+    TAS UX): 'CTZZ6' showing up as its own unlabeled row next to 'CTZ6' reads
+    as a duplicate or a typo, not "the TAS side of the December contract".
+    Picking the outright ('CTZ6') already pulls in its TAS volume via
+    _contract_filter's expansion -- the TAS checkbox alone decides whether it
+    counts. TAS volume is never lost by this: it still contributes to the
+    outright's 'total' here (this groups by ice_code, so CTZZ6's own row is
+    dropped, but window_sum -- the actual totals endpoint -- sums both under
+    one contract-scope once expanded)."""
     ex, exp = excluded_sql()
     table = 'bar5m' if source == 'bloomberg' else 'minute_agg'
     seed = " AND source='bloomberg'" if source == 'bloomberg' else ''
@@ -440,7 +466,8 @@ def traded_contracts(db: Db, commodity: str, session_date: str,
         f' WHERE commodity=%s AND session_date=%s' + seed + ex +
         ' GROUP BY ice_code, generic_code ORDER BY 3 DESC',
         [commodity.upper(), session_date] + exp)
-    return [{'ice_code': i, 'generic_code': g, 'total': s} for i, g, s in rows]
+    return [{'ice_code': i, 'generic_code': g, 'total': s} for i, g, s in rows
+           if not is_tas_ice_code(i, commodity)]
 
 
 def reconcile_rows(db: Db, commodity: str, session_date: str) -> list:

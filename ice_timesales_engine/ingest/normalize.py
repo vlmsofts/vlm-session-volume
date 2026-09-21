@@ -92,6 +92,23 @@ def underlying_ice_code(ice_code: str, commodity: str) -> str:
     return cmd + ice_code[len(cmd) + 1:]     # drop the inserted TAS letter
 
 
+def tas_ice_code_for(ice_code: str, commodity: str) -> Optional[str]:
+    """The TAS ice_code that corresponds to an OUTRIGHT one ('CTZ6' -> 'CTZZ6'
+    for CT). Inverse of underlying_ice_code -- used by the contracts picker
+    so choosing an outright (e.g. from the dashboard's dropdown, which shows
+    outrights only per Lou's 2026-09-21 ruling) still pulls in its TAS volume
+    when the TAS trade-type checkbox is on. Returns None if this commodity has
+    no confirmed TAS symbol, or if `ice_code` is already a TAS code itself
+    (there is no 'TAS of a TAS')."""
+    sym = tas_symbol(commodity)
+    if not sym or is_tas_ice_code(ice_code, commodity):
+        return None
+    cmd = commodity.upper()
+    if not ice_code.upper().startswith(cmd):
+        return None
+    return sym + ice_code[len(cmd):]
+
+
 def parse_et(ts: str) -> datetime:
     """ISO string without TZ suffix -> naive ET datetime (stored as-is)."""
     return datetime.fromisoformat(ts)

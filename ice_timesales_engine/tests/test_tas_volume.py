@@ -30,10 +30,12 @@ from ingest.normalize import (
     is_tas_ice_code,
     normalize_contract,
     normalize_tick,
+    tas_ice_code_for,
     tas_symbol,
     to_generic,
     underlying_ice_code,
 )
+from store import repository as repo
 
 
 # ---------------------------------------------------------------------------
@@ -167,3 +169,122 @@ def test_to_generic_unwraps_tas_before_resolving():
     null-generic bug)."""
     assert to_generic('CTZZ6', '2026-09-18', 'CT') == 'CTDEC1'
     assert to_generic('CTZ6', '2026-09-18', 'CT') == 'CTDEC1'   # unaffected
+
+
+# ---------------------------------------------------------------------------
+# tas_ice_code_for: the inverse mapping the contracts picker fix depends on
+# ---------------------------------------------------------------------------
+#
+# BUG FOUND 2026-09-21 BY LOU, SAME DAY THIS FEATURE SHIPPED: the dashboard's
+# contracts dropdown lists outright ice_codes only (CTZ6, CTH7, ...), and
+# _contract_filter matched on ice_code/generic_code exactly as given. Picking
+# CTZ6 -- the obvious, natural choice -- therefore matched ZERO CTZZ6 rows,
+# so a user with the TAS checkbox CHECKED still saw no TAS volume unless they
+# separately picked the unlabeled CTZZ6 row. "You have to pick CTZZ6 to get
+# TAS...sloppy." Fixed by expanding an outright pick to also match its TAS
+# twin in the SQL filter (tas_ice_code_for), and by removing CTZZ6 from the
+# picker's own list entirely (traded_contracts) so it never appears as a
+# confusing, unlabeled second row next to the outright it belongs to.
+
+class TestTasIceCodeFor:
+
+    def test_outright_maps_to_its_tas_twin(self):
+        assert tas_ice_code_for('CTZ6', 'CT') == 'CTZZ6'
+        assert tas_ice_code_for('CTH7', 'CT') == 'CTZH7'
+
+    def test_no_tas_of_a_tas(self):
+        assert tas_ice_code_for('CTZZ6', 'CT') is None
+
+    def test_none_for_a_commodity_with_no_confirmed_tas_symbol(self):
+        assert tas_ice_code_for('KCU6', 'KC') is None
+
+    def test_round_trips_with_underlying_ice_code(self):
+        for code in ('CTZ6', 'CTH7', 'CTK7', 'CTN7'):
+            assert underlying_ice_code(tas_ice_code_for(code, 'CT'), 'CT') == code
+
+
+# ---------------------------------------------------------------------------
+# END-TO-END: picking the outright in the contracts filter must include TAS
+# ---------------------------------------------------------------------------
+#
+# Reproduces the exact bug against a real database, not just the helper
+# functions above -- Lou's report was about what the dashboard's contract
+# picker + TAS checkbox actually produce together via window_sum/
+# traded_contracts, which is a different code path from is_tas_ice_code/
+# tas_ice_code_for in isolation.
+
+SESS = '2026-09-18'
+CMD = 'CT'
+
+
+def _load_outright_and_tas(db):
+    from ingest.aggregator import rebuild_minute_agg
+    rows = [
+        (CMD, SESS, 'CTZ6', 'CTDEC1', f'{SESS}T09:00:00', 82.0, 100.0,
+         'outright', 'SetByAsk', 1, 'day', f'{SESS}T00:00:00'),
+        (CMD, SESS, 'CTZZ6', 'CTDEC1', f'{SESS}T09:01:00', 0.0, 50.0,
+         'tas', 'SetByAsk', 2, 'day', f'{SESS}T00:00:00'),
+        (CMD, SESS, 'CTH7', 'CTMAR1', f'{SESS}T09:02:00', 83.0, 30.0,
+         'outright', 'SetByBid', 3, 'day', f'{SESS}T00:00:00'),
+    ]
+    db.execmany(
+        'INSERT INTO ticks (commodity, session_date, ice_code, generic_code,'
+        ' exchange_time, price, size, primary_type, conditions_raw, seq_num,'
+        ' window_preset, ingested_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
+        rows)
+    db.commit()
+    rebuild_minute_agg(db, CMD, SESS)
+    return db
+
+
+@pytest.fixture
+def tas_db(tmp_db):
+    return _load_outright_and_tas(tmp_db)
+
+
+class TestContractPickerIncludesTas:
+    """THE BUG, reproduced end-to-end. Lou: 'so you have a tas button but the
+    individual symbol also...so ctz6 selected all other boxes except tas
+    work...you have to pick ctzz6 to get tas...sloppy.'"""
+
+    def test_picking_the_outright_alone_still_includes_its_tas_volume(self, tas_db):
+        """This is the exact scenario Lou hit: contracts=['CTZ6'] (the
+        natural, obvious pick), types includes 'tas'. Before the fix,
+        _contract_filter matched ice_code/generic_code EXACTLY as given, so
+        'CTZZ6' never matched and this returned 0 TAS lots despite the
+        checkbox being on."""
+        r = repo.window_sum(tas_db, CMD, f'{SESS}T00:00:00', f'{SESS}T23:59:59',
+                           contracts=['CTZ6'],
+                           types=['outright', 'tas'])
+        assert r['by_type'].get('tas') == 50.0, (
+            'picking the outright must still surface its TAS volume when '
+            'the tas type is requested')
+        assert r['by_type'].get('outright') == 100.0
+        # CTH7's 30 lots must NOT leak in -- the contract scope still narrows.
+        assert 'CTH7' not in r['by_contract']
+
+    def test_unchecking_tas_still_excludes_it_even_with_the_outright_picked(self, tas_db):
+        """The types= filter must remain the ONLY thing deciding whether TAS
+        counts -- the contract-scope fix must not force TAS in unconditionally."""
+        r = repo.window_sum(tas_db, CMD, f'{SESS}T00:00:00', f'{SESS}T23:59:59',
+                           contracts=['CTZ6'],
+                           types=['outright'])
+        assert 'tas' not in r['by_type']
+        assert r['clean'] == 100.0
+
+    def test_no_contract_filter_is_unaffected(self, tas_db):
+        """The all-contracts default (no picker selection) must keep working
+        exactly as before -- this fix only changes behavior when a SPECIFIC
+        contract is chosen."""
+        r = repo.window_sum(tas_db, CMD, f'{SESS}T00:00:00', f'{SESS}T23:59:59',
+                           types=['outright', 'tas'])
+        assert r['by_type']['tas'] == 50.0
+        assert r['by_type']['outright'] == 130.0   # CTZ6 + CTH7
+
+    def test_traded_contracts_never_lists_tas_as_its_own_row(self, tas_db):
+        """CTZZ6 must not appear in the contracts picker's own list -- it
+        would show as an unlabeled, confusing duplicate of CTZ6."""
+        rows = repo.traded_contracts(tas_db, CMD, SESS)
+        codes = [r['ice_code'] for r in rows]
+        assert 'CTZZ6' not in codes
+        assert 'CTZ6' in codes and 'CTH7' in codes
