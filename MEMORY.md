@@ -808,3 +808,14 @@ Resolved (Lou): NOT a defect. futures_settle's plain `Volume` column is the lega
 ## 2026-09-26 - API reopens a dropped DB connection (commit f373279)
 
 What: routes_query._db() pings SELECT 1 once per request and reopens the read-only Db (via Db(), no DDL) if the server dropped it. Why: local server up 5 days, the connection died, /catalog 500'd until restart. Follow-up not done (touches store/db.py, which ingest shares): connect_timeout + keepalives on read-only connections so a hung network cannot stall a reconnect.
+
+## Session summary 2026-09-26
+
+Worked on / Completed (all pushed to main):
+- f373279 API reopens a dropped DB connection (local server 500'd after 5 days up). Audited by a separate agent: safe to ship.
+- e7395e4 Price: a live ICE eod settle leads over Bloomberg (9/25 CT showed 81.79 from a 09:45 intraday BBG row; ICE settle 82.71). Only 9/25 changed across 62 live sessions.
+- 22da7a5 Dashboard: Daily Totals with 2+ contracts picked -> per-contract rows (own volume + OHLC/settle) + per-session Total row; PNG shows TAS as "CTZ6 TAS" (client-facing only; on-screen CTZZ6 stays, Lou's call); multi-contract PNG splits into chart page + tables page. Verified in headless Chrome.
+Decisions: live ICE settle leads (amends 2026-09-02); same-day volume = CumVolume, never the legacy Volume column; OI is always T+1, not a defect and not in scope.
+Mistake logged: compared the legacy Volume column + a partial BBG row and called ICE volumes stale; options sandbox (Cumulative Volume) matches Lou's EOD email.
+In progress: nothing.
+Next session priorities (optional, need Lou's OK): connect_timeout + keepalives on read-only DB connections (touches store/db.py, shared with ingest); 9/22 CTZ6 is 11 lots under ICE CumVolume (untraced); pre-existing: renderDailyTable does not reset its thead after the Aggressor view.
