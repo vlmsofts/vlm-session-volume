@@ -32,6 +32,9 @@ def create_app(database_url: str = None) -> Flask:
     # which blocked the 2026-08-24 side migration twice and prevents VACUUM
     # from reclaiming dead rows. See DEFECT_IDLE_IN_TRANSACTION.md.
     app.config['DB'] = connect(database_url, read_only=True)
+    # Kept so routes_query._db() can reopen the SAME read-only connection if
+    # the server drops it (idle timeout / network blip). See _db().
+    app.config['DATABASE_URL'] = database_url
 
     from api.routes_query import bp as query_bp
     app.register_blueprint(query_bp)

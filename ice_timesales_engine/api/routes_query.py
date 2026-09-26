@@ -5,10 +5,11 @@ All GET; Cloudflare-fronted; freshness envelope mirrors the VLM gateway
 convention (source / stale / stale_age_seconds surfaced on every response).
 """
 
+import threading
 import time
 from datetime import datetime, timezone
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request
 
 import commodity_meta
 from api import price as price_mod
@@ -16,12 +17,50 @@ from api import windows as win
 from api.cache import cache_headers
 from ingest import classifier
 from store import repository as repo
+from store.db import Db
 
 bp = Blueprint('sessionvol', __name__, url_prefix='/v1/sessionvol')
 
 
+_reconnect_lock = threading.Lock()
+
+
+@bp.before_request
+def _reset_db_check():
+    # g lives on the app context, which an outer app_context() can keep alive
+    # across requests -- reset explicitly so the ping really is per request.
+    g.db_checked = False
+
+
 def _db():
-    return current_app.config['DB']
+    """The process-wide read-only Db, checked once per request.
+
+    The API holds one connection for the life of the process. When the
+    server side drops it (Supabase idle timeout, network blip) every query
+    500s until restart -- seen 2026-09-26 after 5 days up. So the first _db()
+    call in each request pings with SELECT 1; if that fails, reopen.
+
+    Reopens with Db(), NOT connect(): connect() runs init_schema DDL, and
+    this read-only reader must never write. Schema was ensured at startup.
+    """
+    db = current_app.config['DB']
+    if g.get('db_checked'):
+        return db
+    try:
+        db.q('SELECT 1')
+    except Exception:
+        with _reconnect_lock:
+            # Another thread may have already swapped in a fresh one.
+            if current_app.config['DB'] is db:
+                current_app.config['DB'] = Db(
+                    current_app.config.get('DATABASE_URL'), read_only=True)
+                try:
+                    db.close()
+                except Exception:
+                    pass
+            db = current_app.config['DB']
+    g.db_checked = True
+    return db
 
 
 def _csv_param(name):

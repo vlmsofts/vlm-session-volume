@@ -104,3 +104,72 @@ class TestTheAppOptsIn:
         assert r.status_code == 200
         assert r.get_json() == {'ok': True}
         app.config['DB'].close()
+
+
+class TestTheApiSurvivesADroppedConnection:
+    """2026-09-26: the local server ran 5 days, the server side dropped its one
+    connection, and /catalog 500'd until restart. routes_query._db() now pings
+    once per request and reopens on failure."""
+
+    def test_a_dead_connection_is_replaced_and_the_request_succeeds(self, tmp_path):
+        app = create_app(str(tmp_path / 'drop.db'))
+        dead = app.config['DB']
+        dead.conn.close()                       # simulate the server dropping it
+        r = app.test_client().get('/v1/sessionvol/catalog')
+        assert r.status_code == 200
+        fresh = app.config['DB']
+        assert fresh is not dead
+        assert fresh.read_only is True, 'the reopened Db must stay read-only'
+        fresh.close()
+
+    def test_reconnect_runs_no_ddl(self, tmp_path, monkeypatch):
+        """Reopen must use Db(), not connect(): the API never writes."""
+        app = create_app(str(tmp_path / 'noddl.db'))
+        app.config['DB'].conn.close()
+        calls = []
+        monkeypatch.setattr(dbmod.Db, 'init_schema', lambda self: calls.append(1))
+        app.test_client().get('/v1/sessionvol/catalog')
+        assert calls == [], 'reconnect must not run init_schema DDL'
+        app.config['DB'].close()
+
+    def test_a_healthy_connection_is_kept_and_pinged_once_per_request(self, tmp_path):
+        app = create_app(str(tmp_path / 'ok.db'))
+        db = app.config['DB']
+        pings = []
+        real_q = db.q
+        db.q = lambda sql, params=(): (pings.append(1) if sql == 'SELECT 1' else None) or real_q(sql, params)
+        client = app.test_client()
+        for _ in range(2):                      # catalog calls _db() for every commodity
+            assert client.get('/v1/sessionvol/catalog').status_code == 200
+        assert app.config['DB'] is db
+        assert len(pings) == 2, 'one ping per request -- not per _db() call, not per process'
+        db.close()
+
+    def test_a_dead_connection_is_repinged_even_under_an_outer_app_context(self, tmp_path):
+        app = create_app(str(tmp_path / 'ctx.db'))
+        client = app.test_client()
+        with app.app_context():
+            assert client.get('/v1/sessionvol/catalog').status_code == 200
+            app.config['DB'].conn.close()
+            assert client.get('/v1/sessionvol/catalog').status_code == 200
+        app.config['DB'].close()
+
+    def test_db_down_gives_500_then_recovers(self, tmp_path, monkeypatch):
+        """If reopening fails too: a 500, config['DB'] untouched, and the next
+        request retries rather than being stuck."""
+        import api.routes_query as rq
+        app = create_app(str(tmp_path / 'down.db'))
+        dead = app.config['DB']
+        dead.conn.close()
+        real_db = rq.Db
+
+        def refuse(*a, **k):
+            raise ConnectionError('db unreachable')
+        monkeypatch.setattr(rq, 'Db', refuse)
+        client = app.test_client()
+        assert client.get('/v1/sessionvol/catalog').status_code == 500
+        assert app.config['DB'] is dead
+        monkeypatch.setattr(rq, 'Db', real_db)
+        assert client.get('/v1/sessionvol/catalog').status_code == 200
+        assert app.config['DB'] is not dead
+        app.config['DB'].close()
