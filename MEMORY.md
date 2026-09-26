@@ -797,3 +797,14 @@ What: Task Scheduler task "VLM ICE Timesales Engine - Daily Ingest" trigger chan
 Why: the softs blotter starts 17:00 and runs KC then SB then CC as three processes. Since the get_timesales batch was correctly cut to 10 symbols (2026-09-18) the run takes about 30 minutes, not 7 to 11: on 2026-09-18 SB started 17:09:23 and CC 17:17:27, so the 17:10 ingest fired before sugar and cocoa had been captured. The 21:00 catch-up and the capture_landed() quiescence check covered it, but the 17:10 slot did no useful work for SB/CC.
 Rejected: moving the softs blotter earlier (it shares one ICE session with cotton's settle window; the 2026-08-27 KC Z26 loss is the precedent).
 Note: 17:45 still precedes a worst-case softs run with full re-ask budgets (up to about 18:00); the 21:00 catch-up remains the backstop, and the capture manifests (Phase 1 softs, not yet landed) will let the ingest key on a finished leg instead of a clock.
+
+## 2026-09-26 - Price: a live ICE eod settle leads over Bloomberg (amends 2026-09-02 "Bloomberg is the PRICE authority")
+
+What: api/price.py settle_for() now answers from a LIVE (non-_BACKFILL) ICE capture first when it carries the contract. Bloomberg still leads for the 37 _BACKFILL folders, for contracts a capture omits, and for pre-capture dates. Commit e7395e4.
+Why: the dashboard showed 81.79 for 2026-09-25 CT; ICE's settle was 82.71. cotton_futures_volume_history.csv was refreshed at 09:45 ET that day, so its CTDEC1 row was an intraday snapshot (partial volume, blank OI) and Bloomberg-first let it override ICE. Lou: "ice eod always has settles...by 4pm daily it has futures". Audit: of 62 live CT sessions with both sources, only 2026-09-25 changes.
+Rejected: keeping Bloomberg first and filtering "incomplete-looking" rows (a heuristic, and the ICE settle is the exchange's own number).
+Open: ICE's futures_settle_2026-09-25.csv Volume/OpenInt (23443 / 182243) equal Bloomberg's 9/24 values, so those two columns look one session stale. Not used for settle; not investigated.
+
+## 2026-09-26 - API reopens a dropped DB connection (commit f373279)
+
+What: routes_query._db() pings SELECT 1 once per request and reopens the read-only Db (via Db(), no DDL) if the server dropped it. Why: local server up 5 days, the connection died, /catalog 500'd until restart. Follow-up not done (touches store/db.py, which ingest shares): connect_timeout + keepalives on read-only connections so a hung network cannot stall a reconnect.
