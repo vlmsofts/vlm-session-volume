@@ -803,7 +803,7 @@ Note: 17:45 still precedes a worst-case softs run with full re-ask budgets (up t
 What: api/price.py settle_for() now answers from a LIVE (non-_BACKFILL) ICE capture first when it carries the contract. Bloomberg still leads for the 37 _BACKFILL folders, for contracts a capture omits, and for pre-capture dates. Commit e7395e4.
 Why: the dashboard showed 81.79 for 2026-09-25 CT; ICE's settle was 82.71. cotton_futures_volume_history.csv was refreshed at 09:45 ET that day, so its CTDEC1 row was an intraday snapshot (partial volume, blank OI) and Bloomberg-first let it override ICE. Lou: "ice eod always has settles...by 4pm daily it has futures". Audit: of 62 live CT sessions with both sources, only 2026-09-25 changes.
 Rejected: keeping Bloomberg first and filtering "incomplete-looking" rows (a heuristic, and the ICE settle is the exchange's own number).
-Open: ICE's futures_settle_2026-09-25.csv Volume/OpenInt (23443 / 182243) equal Bloomberg's 9/24 values, so those two columns look one session stale. Not used for settle; not investigated.
+Resolved (Lou): NOT a defect. futures_settle's plain `Volume` column is the legacy prior-session field; the real same-day volume is `CumVolume` (ICE "Cumulative Volume"), which is what the options sandbox reads (settle_pull.py:415) and what the EOD email reports -- 2026-09-25 CTZ6: sandbox volume 29223 == CumVolume 29223, sandbox oi 182243 == OpenInt 182243. OpenInt is the latest ICE-published OI, identical to the sandbox's. Compare against CumVolume, never Volume.
 
 ## 2026-09-26 - API reopens a dropped DB connection (commit f373279)
 
