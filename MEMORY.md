@@ -819,3 +819,5 @@ Decisions: live ICE settle leads (amends 2026-09-02); same-day volume = CumVolum
 Mistake logged: compared the legacy Volume column + a partial BBG row and called ICE volumes stale; options sandbox (Cumulative Volume) matches Lou's EOD email.
 In progress: nothing.
 Next session priorities (optional, need Lou's OK): connect_timeout + keepalives on read-only DB connections (touches store/db.py, shared with ingest); 9/22 CTZ6 is 11 lots under ICE CumVolume (untraced); pre-existing: renderDailyTable does not reset its thead after the Aggressor view.
+
+Addendum (same day, 13:15 ET): aff27ed client PNG polish - no em dashes in PNG headers (std + VAP), Leg tile dropped when Leg unticked, empty Generic column dropped from PNG, multi-contract settle label now "Dec settle" / "Avg Dec settle, 5 sessions" (was "5 contracts summed"; nothing is summed). Reconciliation fact for the client card: ICE official contract volume (CumVolume) = outright + legs + block + EFS + EFP, EXCLUDES TAS; e.g. 9/25 CTZ6 card 23,840 (outright+block+TAS) vs ICE 29,223, gap 5,383 = legs + EFS/EFP - TAS (not "legs and blocks").
