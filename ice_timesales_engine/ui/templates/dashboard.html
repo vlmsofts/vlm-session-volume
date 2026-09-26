@@ -60,6 +60,7 @@
   td { padding:7px 12px; border-bottom:1px solid #e5e7eb; font-size:14px; font-weight:700;
        text-align:right; color:#1a1a2e; }
   tr:nth-child(even) td { background:#f9f9f9; }
+  tr.daytotal td { background:#e5e7eb; border-bottom:2px solid #c9a227; }
   .flag-ok { color:#15803d; } .flag-warn { color:#c0392b; }
   #chart { margin-top:14px; height:380px; }
   #vap-chart { margin-top:14px; height:520px; }
@@ -389,9 +390,23 @@ function runQuery() {
         .then(function(r){ return r.json().then(function(j){ return {ok: r.ok, body: j}; }); })
         .catch(function(e){ return {ok: false, body: {error: String(e)}}; })
     : Promise.resolve(null);
+  // Several contracts picked on Daily Totals -> the daily table breaks out
+  // one row per contract, so each picked contract needs its OWN settle/OHLC
+  // (the front-month priceq above only feeds the chart line + avg tile).
+  // A failed per-contract fetch leaves that contract's price cells blank.
+  var perContractq = (view === 'totals' && pickedContracts.length > 1)
+    ? Promise.all(pickedContracts.map(function(c) {
+        return fetch('/v1/sessionvol/'+cmd+'/price?'+dq.slice(1)+'&contract='+c)
+          .then(function(r){ return r.json(); })
+          .then(function(j){ return [c, (j && j.series) || null]; })
+          .catch(function(){ return [c, null]; });
+      })).then(function(pairs) {
+        var m = {}; pairs.forEach(function(kv){ m[kv[0]] = kv[1]; }); return m;
+      })
+    : Promise.resolve(null);
 
-  Promise.all([wq, pq, priceq, sideq]).then(function(res) {
-    var w = res[0], p = res[1], priceRes = res[2], s = res[3];
+  Promise.all([wq, pq, priceq, sideq, perContractq]).then(function(res) {
+    var w = res[0], p = res[1], priceRes = res[2], s = res[3], perContract = res[4];
     if (w.error) { showErr(w.error); return; }
     if (p.error) { showErr(p.error); return; }
     if (s && s.error) { showErr(s.error); return; }
@@ -426,10 +441,11 @@ function runQuery() {
     if (view === 'single')          renderChart(p);
     else if (view === 'continuous') renderContinuous(p);
     else if (view === 'overlay')    renderOverlay(p);
-    else if (view === 'totals')     renderTotals(w, priceInfo);
+    else if (view === 'totals')     renderTotals(w, priceInfo, perContract, pickedContracts, cmd);
     else if (view === 'aggressor')  renderAggressor(s);
     armPngButton({
       view: view, cmd: cmd, w: w, p: p, priceInfo: priceInfo, s: s,
+      perContractDaily: !!perContract,
       dateLabel: isRange() ? el('dfrom').value+'_to_'+el('dto').value : el('date').value
     });
   }).catch(function(e) {
@@ -763,7 +779,7 @@ function renderOverlay(p) {
 // null when the price fetch failed (the failure itself was already shown
 // via showErr in runQuery; this function just omits the line, it never
 // fabricates one).
-function renderTotals(w, priceInfo) {
+function renderTotals(w, priceInfo, perContract, picked, cmd) {
   var pd = w.per_date || {};
   var dates = Object.keys(pd).sort();
   var series = (priceInfo && priceInfo.series) || null;
@@ -798,7 +814,8 @@ function renderTotals(w, priceInfo) {
   }
   Plotly.newPlot('chart', traces, layout, { displayModeBar: false, responsive: true });
 
-  renderDailyTable(dates, pd, series);
+  if (perContract) renderDailyTableByContract(dates, pd, perContract, picked, cmd);
+  else             renderDailyTable(dates, pd, series);
 
   // Avg settle tile -- appended after renderStats() (called earlier in
   // runQuery, shared by every view) rather than folded into it, so only
@@ -827,6 +844,56 @@ function renderDailyTable(dates, pd, series) {
       + '<td>' + (row ? px(row.low) : '—') + '</td>'
       + '<td>' + (row ? px(row.settle) : '—') + '</td></tr>';
   }).join('');
+}
+
+// Client-facing name for a contract code. TAS ice_codes carry one extra
+// letter after the commodity prefix ('CTZZ6' is CT Dec-26 TAS -- see
+// ingest/normalize.py is_tas_ice_code: outright is always len(cmd)+2, TAS
+// len(cmd)+3), which is desk shorthand clients would not read. -> 'CTZ6 TAS'.
+function contractLabel(code, cmd) {
+  if (cmd && code.length === cmd.length + 3 && code.indexOf(cmd) === 0) {
+    return cmd + code.slice(cmd.length + 1) + ' TAS';
+  }
+  return code;
+}
+
+// Daily Totals with SEVERAL contracts picked: one row per contract per
+// session (its own volume + its own OHLC/settle), then that session's total.
+// Contracts follow picker order, each TAS row right after its outright. TAS
+// rows carry no OHLC -- TAS trades at the settle, it has no range of its own.
+function renderDailyTableByContract(dates, pd, perContract, picked, cmd) {
+  el('banner-daily').style.display = '';
+  var tbl = el('tbl-daily');
+  tbl.style.display = '';
+  tbl.querySelector('thead').innerHTML =
+    '<tr><th>Date</th><th>Volume</th><th>Contract</th><th>Open</th><th>High</th><th>Low</th><th>Settle</th></tr>';
+  function px(v) { return v != null ? v.toFixed(2) : '—'; }
+  function under(code) {
+    var lbl = contractLabel(code, cmd);
+    return lbl === code ? code : lbl.replace(' TAS', '');
+  }
+  function rank(code) {
+    var i = picked.indexOf(under(code));
+    return (i < 0 ? picked.length : i) * 2 + (under(code) === code ? 0 : 1);
+  }
+  var html = [];
+  dates.forEach(function(d) {
+    var bc = pd[d].by_contract || {};
+    Object.keys(bc).sort(function(a, b){ return rank(a) - rank(b) || (a < b ? -1 : 1); })
+      .forEach(function(code) {
+        var isTas = under(code) !== code;
+        var s = !isTas && perContract[code] ? perContract[code][d] : null;
+        html.push('<tr><td>' + d + '</td><td>' + fmt(bc[code]) + '</td>'
+          + '<td>' + contractLabel(code, cmd) + '</td>'
+          + '<td>' + (s ? px(s.open) : '—') + '</td>'
+          + '<td>' + (s ? px(s.high) : '—') + '</td>'
+          + '<td>' + (s ? px(s.low) : '—') + '</td>'
+          + '<td>' + (s ? px(s.settle) : '—') + '</td></tr>');
+      });
+    html.push('<tr class="daytotal"><td>' + d + '</td><td>' + fmt(pd[d].clean) + '</td>'
+      + '<td>Total</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>');
+  });
+  tbl.querySelector('tbody').innerHTML = html.join('');
 }
 
 // VLM master palette, aggressor colors -- buy/sell reuse the same green/red
@@ -1124,6 +1191,8 @@ function _pngTables() {
     return { head: head, rows: rows };
   }
   var out = { contract: read(el('tbl-contract')), type: read(el('tbl-type')) };
+  // Client-facing TAS names in the PNG ('CTZZ6' -> 'CTZ6 TAS').
+  out.contract.rows.forEach(function(r){ r[0] = contractLabel(r[0], _LAST.cmd); });
   if ((_LAST.view === 'totals' || _LAST.view === 'aggressor')
       && el('tbl-daily').style.display !== 'none') {
     out.daily = read(el('tbl-daily'));
@@ -1139,6 +1208,18 @@ function exportPng() {
   // _pngSeries()/_pngDrawChart()/_pngTables(), which stay untouched for the
   // other five views.
   if (_LAST.view === 'vap') { return exportVapPng(); }
+  // Daily Totals with several contracts: the per-contract daily table makes
+  // one image too long, so the chart and the tables go out as two PNGs.
+  // Every other case stays a single PNG.
+  if (_LAST.view === 'totals' && _LAST.perContractDaily) {
+    _exportStdPng({chart: true, tables: false}, '_p1of2_chart', 'Page 1 of 2 — Chart');
+    _exportStdPng({chart: false, tables: true}, '_p2of2_tables', 'Page 2 of 2 — Tables');
+    return;
+  }
+  _exportStdPng({chart: true, tables: true}, '', '');
+}
+
+function _exportStdPng(parts, fileTag, pageLabel) {
   var L = _LAST;
   var S = 2;                    // retina scale, matches the reference pattern
   var W = 1180, PAD = 24;
@@ -1152,9 +1233,11 @@ function exportPng() {
   var _perRow = Math.min(stats.length, 6);
   var _kpiRows = Math.ceil(stats.length / _perRow);
   var KPI_BLOCK = _kpiRows*KPI_H + (_kpiRows-1)*10;
-  var H = HDR_H + ACCENT + 12 + KPI_BLOCK + 16 + CHART_H + 16
-        + (tables.daily ? tblH(tables.daily) : 0)
-        + tblH(tables.contract) + tblH(tables.type) + FOOT_H;
+  var H = HDR_H + ACCENT + 12
+        + (parts.chart ? KPI_BLOCK + 16 + CHART_H + 16 : 0)
+        + (parts.tables ? (tables.daily ? tblH(tables.daily) : 0)
+                          + tblH(tables.contract) + tblH(tables.type) : 0)
+        + FOOT_H;
 
   var cv = document.createElement('canvas');
   cv.width = W*S; cv.height = H*S;
@@ -1180,7 +1263,8 @@ function exportPng() {
   cx.fillStyle = PNG.muted; cx.font = '12px Arial';
   var _win = (L.view === 'ab') ? _pngWindow(L.wB) : _pngWindow(L.w);
   cx.fillText(L.cmd + ' — ' + name + '  ·  ' + viewLabel
-              + (_win ? '  ·  ' + _win + ' ET' : ''), PAD, 70);
+              + (_win ? '  ·  ' + _win + ' ET' : '')
+              + (pageLabel ? '  ·  ' + pageLabel : ''), PAD, 70);
   cx.textAlign = 'right';
   cx.fillStyle = PNG.white; cx.font = 'bold 16px Arial';
   cx.fillText(L.dateLabel, W-PAD, 34);
@@ -1190,6 +1274,7 @@ function exportPng() {
 
   var y = HDR_H + ACCENT + 12;
 
+  if (parts.chart) {
   // KPI tiles -- wrap to a second row past 6 across, otherwise long labels
   // like WINDOW (EACH SESSION) outgrow their tile.
   var gap = 10, perRow = Math.min(stats.length, 6);
@@ -1216,13 +1301,16 @@ function exportPng() {
   // Chart -- bars or lines, hand-drawn to canvas coordinates
   _pngDrawChart(cx, chartData, PAD, y, W-PAD*2, CHART_H);
   y += CHART_H + 16;
+  }
 
   // Tables
-  if (tables.daily) {
-    y = _pngDrawTable(cx, 'DAILY VOLUME', tables.daily, PAD, y, W-PAD*2, ROW_H, THEAD_H, SEC_H) + SEC_GAP;
+  if (parts.tables) {
+    if (tables.daily) {
+      y = _pngDrawTable(cx, 'DAILY VOLUME', tables.daily, PAD, y, W-PAD*2, ROW_H, THEAD_H, SEC_H) + SEC_GAP;
+    }
+    y = _pngDrawTable(cx, 'BY CONTRACT', tables.contract, PAD, y, W-PAD*2, ROW_H, THEAD_H, SEC_H) + SEC_GAP;
+    y = _pngDrawTable(cx, 'BY TRADE TYPE', tables.type, PAD, y, W-PAD*2, ROW_H, THEAD_H, SEC_H) + SEC_GAP;
   }
-  y = _pngDrawTable(cx, 'BY CONTRACT', tables.contract, PAD, y, W-PAD*2, ROW_H, THEAD_H, SEC_H) + SEC_GAP;
-  y = _pngDrawTable(cx, 'BY TRADE TYPE', tables.type, PAD, y, W-PAD*2, ROW_H, THEAD_H, SEC_H) + SEC_GAP;
 
   // Footer
   cx.fillStyle = PNG.alt; cx.fillRect(0, y, W, FOOT_H);
@@ -1234,7 +1322,7 @@ function exportPng() {
   cx.fillText('vlmdata.com · ICE session-volume engine · for discussion purposes only', W-PAD, y+FOOT_H/2);
 
   var link = document.createElement('a');
-  link.download = 'vlm_' + L.cmd + '_' + L.view + '_' + L.dateLabel + '.png';
+  link.download = 'vlm_' + L.cmd + '_' + L.view + '_' + L.dateLabel + fileTag + '.png';
   link.href = cv.toDataURL('image/png');
   link.click();
 }
@@ -1417,7 +1505,8 @@ function _pngDrawTable(cx, title, t, x0, y0, w, rowH, theadH, secH) {
   y += theadH;
 
   t.rows.forEach(function(row, ri) {
-    cx.fillStyle = ri % 2 === 0 ? PNG.white : PNG.alt;
+    // Per-session Total rows in the per-contract daily table stand out.
+    cx.fillStyle = row[2] === 'Total' ? PNG.border : (ri % 2 === 0 ? PNG.white : PNG.alt);
     cx.fillRect(x0, y, w, rowH);
     cx.strokeStyle = PNG.border; cx.beginPath();
     cx.moveTo(x0, y+rowH-0.5); cx.lineTo(x0+w, y+rowH-0.5); cx.stroke();
