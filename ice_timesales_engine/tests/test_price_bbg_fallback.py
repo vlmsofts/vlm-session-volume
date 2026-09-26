@@ -27,6 +27,11 @@ costs nothing and closes the gap the ICE capture cannot.
 
 ICE still matters: it is fresh the moment the eod job writes it, so it answers
 for a session Bloomberg has not published yet (typically today's).
+
+AMENDED 2026-09-26 (Lou: "ice eod always has settles"): a LIVE ICE capture now
+leads for its own session -- the history file can be refreshed mid-session
+(2026-09-25: 81.79 intraday vs 82.71 settle). Bloomberg still leads for
+_BACKFILL folders, contracts a capture omits, and pre-capture dates.
 """
 
 import csv
@@ -94,13 +99,24 @@ def write_bbg(path, rows):
 # PRECEDENCE: Bloomberg leads, ICE fills the gap
 # ---------------------------------------------------------------------------
 
-def test_bloomberg_leads_when_both_sources_have_the_date(ice_root, bbg_csv):
-    """Both carry the session -> Bloomberg answers.
+def test_live_ice_capture_leads_over_a_midsession_bloomberg_row(ice_root, bbg_csv):
+    """AMENDED 2026-09-26. The Bloomberg history was refreshed at 09:45 ET on
+    2026-09-25 and its CTDEC1 row carried an intraday px_last of 81.79; ICE's
+    eod settle was 82.71 and the dashboard showed the wrong one. A live ICE
+    capture answers for its own session."""
+    write_settle(ice_root, '2026-09-25', [('CT Z26', '82.71')])
+    write_bbg(bbg_csv, [('2026-09-25', 'CTDEC1', '81.79')])
 
-    Not a downgrade: the two agreed on 87 of 87 real ICE day-folders. Leading
-    with the deeper, retention-free source is what keeps an expired contract
-    from vanishing out of the series."""
-    write_settle(ice_root, '2026-05-15', [('CT Z26', '81.91')])
+    row = pm.settle_for('CT', '2026-09-25', ice_code='CTZ6')
+    assert row['source'] == 'ice'
+    assert row['settle'] == 82.71
+
+
+def test_bloomberg_still_leads_on_a_backfill_folder(ice_root, bbg_csv):
+    """The 2026-09-02 ruling stands for the reconstructed folders: their OHLC
+    is not reliable for the session they name."""
+    write_settle(ice_root, '2026-05-15', [('CT Z26', '81.00')])
+    (ice_root / 'CT' / '2026-05-15' / '_BACKFILL.txt').write_text('x')
     write_bbg(bbg_csv, [('2026-05-15', 'CTDEC1', '81.91')])
 
     row = pm.settle_for('CT', '2026-05-15', ice_code='CTZ6')

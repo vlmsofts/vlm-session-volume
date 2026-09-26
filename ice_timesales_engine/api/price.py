@@ -37,6 +37,12 @@ settle matched Bloomberg CTDEC1 px_last to within 0.005 on 87 of 87 days
 -- 50 live, 37 backfilled, zero disagreements. They are the same number;
 Bloomberg simply has 21 years of it and never drops an expired month.
 
+AMENDED 2026-09-26 (Lou): a LIVE ICE eod capture now leads for its own
+session. The history file can be refreshed mid-session -- its 2026-09-25
+CTDEC1 row was written at 09:45 ET (px_last 81.79, OI blank) and overrode
+ICE's 82.71 settle. Bloomberg still leads for the _BACKFILL folders above,
+for contracts a capture omits, and for everything before the capture.
+
 Every returned row carries `source` ('bloomberg' | 'ice') so the origin is
 always inspectable, though per Lou's ruling the chart does not label it.
 Bloomberg carries no separate settle-vs-last distinction in this file, so
@@ -150,6 +156,13 @@ def _bbg_row(commodity: str, session_date: str, generic: str):
     return _bbg_index().get(cmd, {}).get(session_date, {}).get(generic.upper())
 
 
+def _is_backfill(commodity: str, session_date: str) -> bool:
+    """True for a day-folder reconstructed by backfill_blotter.py (marked
+    _BACKFILL.txt) -- the folders that can omit expired months."""
+    return os.path.isfile(os.path.join(config.blotter_dir(commodity, session_date),
+                                       '_BACKFILL.txt'))
+
+
 def _settle_file(commodity: str, session_date: str) -> str:
     return os.path.join(config.blotter_dir(commodity, session_date),
                         f'futures_settle_{session_date}.csv')
@@ -223,11 +236,11 @@ def settle_for(commodity: str, session_date: str, ice_code: str = None) -> dict 
     """{'generic_code','ice_code','settle','open','high','low','date','source'}
     for one session, for a specific ice_code if given, else the front month.
 
-    BLOOMBERG FIRST, ICE FILLS THE REST. The Bloomberg history is the price
-    authority (see the module docstring): decades deep, never drops an expired
-    contract, and verified identical to ICE's settle on all 87 day-folders on
-    disk. The ICE tape capture answers only for a session Bloomberg has not
-    got yet -- typically today's, before the history file is refreshed.
+    LIVE ICE FIRST, THEN BLOOMBERG (2026-09-26). A live (non-_BACKFILL) ICE
+    capture that carries the contract answers. Otherwise Bloomberg answers:
+    sessions before the capture, contracts a capture omits, and the 37
+    reconstructed _BACKFILL folders (Bloomberg still leads there, per the
+    2026-09-02 ruling in the module docstring).
 
     Returns None when neither has it: an honest absence (weekend, exchange
     holiday, today not yet settled, or a commodity with no history), never a
@@ -243,6 +256,24 @@ def settle_for(commodity: str, session_date: str, ice_code: str = None) -> dict 
     if not generic:
         return None
 
+    def _ice():
+        r = _read_settle_rows(cmd, session_date).get(generic)
+        if r is None:
+            return None
+        return {'generic_code': generic, 'ice_code': ice_code or r['ice_code'],
+                'settle': r['settle'], 'open': r['open'], 'high': r['high'],
+                'low': r['low'], 'date': session_date, 'source': 'ice'}
+
+    # A LIVE ICE eod capture leads (Lou, 2026-09-26: "ice eod always has
+    # settles... by 4pm daily it has futures"). The Bloomberg history file can
+    # be refreshed mid-session: its 2026-09-25 CTDEC1 row was written at 09:45
+    # ET and carried px_last 81.79 against ICE's 82.71 settle.
+    live = not _is_backfill(cmd, session_date)
+    if live:
+        hit = _ice()
+        if hit is not None:
+            return hit
+
     row = _bbg_row(cmd, session_date, generic)
     if row is not None:
         return {'generic_code': generic, 'ice_code': ice_code or generic,
@@ -250,15 +281,8 @@ def settle_for(commodity: str, session_date: str, ice_code: str = None) -> dict 
                 'high': row['high'], 'low': row['low'],
                 'date': session_date, 'source': 'bloomberg'}
 
-    # Bloomberg has not got this session yet -- fall through to the ICE
-    # capture, which is fresh the moment the eod job writes it.
-    rows = _read_settle_rows(cmd, session_date)
-    r = rows.get(generic)
-    if r is None:
-        return None
-    return {'generic_code': generic, 'ice_code': ice_code or r['ice_code'],
-            'settle': r['settle'], 'open': r['open'], 'high': r['high'],
-            'low': r['low'], 'date': session_date, 'source': 'ice'}
+    # A _BACKFILL folder answers only when Bloomberg cannot.
+    return None if live else _ice()
 
 
 def settle_series(commodity: str, dates: list, ice_code: str = None) -> tuple[dict, list]:
