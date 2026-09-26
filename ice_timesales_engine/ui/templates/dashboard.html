@@ -428,6 +428,22 @@ function runQuery() {
           : (pickedContracts.length > 1
               ? 'Settle (front month ref, ' + pickedContracts.length + ' contracts summed)'
               : 'Settle (front month)');
+        // Several contracts picked: the line is ONE front month's daily
+        // settle, and the tile is the average of those settles -- nothing is
+        // summed across contracts. Name the month when the range holds one
+        // (CTDEC1 -> 'Dec'); a mid-range roll falls back to 'front month'.
+        if (pickedContracts.length > 1 && priceInfo.series) {
+          var gens = {}, nSess = 0;
+          Object.values(priceInfo.series).forEach(function(r) {
+            if (r) { gens[r.generic_code] = 1; nSess++; }
+          });
+          var g = Object.keys(gens);
+          var mon = (g.length === 1)
+            ? g[0].substr(cmd.length, 1) + g[0].substr(cmd.length + 1, 2).toLowerCase()
+            : 'front month';
+          priceInfo.price_label = mon + ' settle';
+          priceInfo.avg_label = 'Avg ' + mon + ' settle, ' + nSess + ' session' + (nSess === 1 ? '' : 's');
+        }
         // Partial failure: some dates in the range hit a genuine read error
         // (as opposed to an honest "no settle file yet") -- surface that
         // distinction rather than letting it look identical to a normal gap.
@@ -821,7 +837,8 @@ function renderTotals(w, priceInfo, perContract, picked, cmd) {
   // runQuery, shared by every view) rather than folded into it, so only
   // Daily Totals gets this tile and every other view is untouched.
   if (priceInfo && priceInfo.avg_settle != null) {
-    el('stats').innerHTML += '<div class="stat"><div class="lbl">Avg ' + priceInfo.price_label + '</div>'
+    el('stats').innerHTML += '<div class="stat"><div class="lbl">'
+      + (priceInfo.avg_label || 'Avg ' + priceInfo.price_label) + '</div>'
       + '<div class="val">' + priceInfo.avg_settle.toFixed(2) + '</div></div>';
   }
 }
@@ -1156,9 +1173,11 @@ function _pngStats() {
   var tiles = [
     {label:'Total (selected)', value: fmt(t.clean)},
     {label:'Outright', value: fmt(t.by_type.outright)},
-    {label:'Leg', value: fmt(t.by_type.leg)},
+    // Leg tile only when legs are actually counted (Leg type ticked) -- a
+    // client card that excludes legs would otherwise show a bare dash.
+    t.by_type.leg != null ? {label:'Leg', value: fmt(t.by_type.leg)} : null,
     {label:'EFS + EFP', value: fmt((t.by_type.efs||0)+(t.by_type.efp||0))}
-  ];
+  ].filter(Boolean);
   var n = (L.w.dates||[]).length;
   if (n > 1) {
     tiles.push({label:'Sessions', value: String(n)});
@@ -1167,7 +1186,8 @@ function _pngStats() {
   var win = _pngWindow(L.w);
   if (win) { tiles.push({label: n > 1 ? 'Window (each session)' : 'Window', value: win}); }
   if (L.view === 'totals' && L.priceInfo && L.priceInfo.avg_settle != null) {
-    tiles.push({label: 'Avg ' + (L.priceInfo.price_label || 'Settle (front month)'),
+    tiles.push({label: L.priceInfo.avg_label
+                       || 'Avg ' + (L.priceInfo.price_label || 'Settle (front month)'),
                value: L.priceInfo.avg_settle.toFixed(2)});
   }
   if (L.view === 'aggressor' && L.s && L.s.per_date) {
@@ -1193,6 +1213,12 @@ function _pngTables() {
   var out = { contract: read(el('tbl-contract')), type: read(el('tbl-type')) };
   // Client-facing TAS names in the PNG ('CTZZ6' -> 'CTZ6 TAS').
   out.contract.rows.forEach(function(r){ r[0] = contractLabel(r[0], _LAST.cmd); });
+  // The on-screen Generic column is always blank -- keep it off the PNG.
+  var gi = out.contract.head.indexOf('Generic');
+  if (gi >= 0 && out.contract.rows.every(function(r){ return !r[gi]; })) {
+    out.contract.head.splice(gi, 1);
+    out.contract.rows.forEach(function(r){ r.splice(gi, 1); });
+  }
   if ((_LAST.view === 'totals' || _LAST.view === 'aggressor')
       && el('tbl-daily').style.display !== 'none') {
     out.daily = read(el('tbl-daily'));
@@ -1212,8 +1238,8 @@ function exportPng() {
   // one image too long, so the chart and the tables go out as two PNGs.
   // Every other case stays a single PNG.
   if (_LAST.view === 'totals' && _LAST.perContractDaily) {
-    _exportStdPng({chart: true, tables: false}, '_p1of2_chart', 'Page 1 of 2 — Chart');
-    _exportStdPng({chart: false, tables: true}, '_p2of2_tables', 'Page 2 of 2 — Tables');
+    _exportStdPng({chart: true, tables: false}, '_p1of2_chart', 'Page 1 of 2: Chart');
+    _exportStdPng({chart: false, tables: true}, '_p2of2_tables', 'Page 2 of 2: Tables');
     return;
   }
   _exportStdPng({chart: true, tables: true}, '', '');
@@ -1257,12 +1283,12 @@ function _exportStdPng(parts, fileTag, pageLabel) {
   cx.fillStyle = PNG.gold; cx.fillRect(0, HDR_H, W, ACCENT);
   cx.textBaseline = 'alphabetic'; cx.textAlign = 'left';
   cx.fillStyle = PNG.white; cx.font = 'bold 26px Arial';
-  cx.fillText('VLM Commodities — Cotton Desk', PAD, 34);
+  cx.fillText('VLM Commodities · Cotton Desk', PAD, 34);
   cx.fillStyle = PNG.gold; cx.font = 'bold 14px Arial';
-  cx.fillText('ICE TIME & SALES — SESSION VOLUME', PAD, 54);
+  cx.fillText('ICE TIME & SALES · SESSION VOLUME', PAD, 54);
   cx.fillStyle = PNG.muted; cx.font = '12px Arial';
   var _win = (L.view === 'ab') ? _pngWindow(L.wB) : _pngWindow(L.w);
-  cx.fillText(L.cmd + ' — ' + name + '  ·  ' + viewLabel
+  cx.fillText(L.cmd + ' · ' + name +'  ·  ' + viewLabel
               + (_win ? '  ·  ' + _win + ' ET' : '')
               + (pageLabel ? '  ·  ' + pageLabel : ''), PAD, 70);
   cx.textAlign = 'right';
@@ -1547,11 +1573,11 @@ function _pngVapChrome(cx, W, PAD, L, j, suffix) {
   cx.fillStyle = PNG.gold; cx.fillRect(0, HDR_H, W, ACCENT);
   cx.textBaseline = 'alphabetic'; cx.textAlign = 'left';
   cx.fillStyle = PNG.white; cx.font = 'bold 26px Arial';
-  cx.fillText('VLM Commodities — Cotton Desk', PAD, 34);
+  cx.fillText('VLM Commodities · Cotton Desk', PAD, 34);
   cx.fillStyle = PNG.gold; cx.font = 'bold 14px Arial';
-  cx.fillText('ICE TIME & SALES — SESSION VOLUME', PAD, 54);
+  cx.fillText('ICE TIME & SALES · SESSION VOLUME', PAD, 54);
   cx.fillStyle = PNG.muted; cx.font = '12px Arial';
-  cx.fillText(L.cmd + ' — ' + name + '  ·  Volume at Price  ·  ' + j.contract
+  cx.fillText(L.cmd + ' · ' + name +'  ·  Volume at Price  ·  ' + j.contract
               + (suffix ? '  ·  ' + suffix : ''), PAD, 70);
   cx.textAlign = 'right';
   cx.fillStyle = PNG.white; cx.font = 'bold 16px Arial';
@@ -1688,7 +1714,7 @@ function _exportVapTablePngs() {
     cx.fillStyle = PNG.white; cx.fillRect(0, 0, W, H);
 
     var pageSuffix = pageCount > 1
-      ? 'Table — page ' + (page+1) + ' of ' + pageCount
+      ? 'Table, page ' + (page+1) + ' of ' + pageCount
           + ' (' + pageRows[pageRows.length-1].price.toFixed(2) + '–' + pageRows[0].price.toFixed(2) + ')'
       : 'Table';
     var y = _pngVapChrome(cx, W, PAD, L, j, pageSuffix);
